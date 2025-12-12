@@ -36,7 +36,12 @@ async function run() {
     // Get all users
     app.get("/users", async (req, res) => {
       try {
-        const users = await usersCollection.find().toArray();
+        const { email } = req.query;
+
+        let query = {};
+        if (email) query.email = email;
+
+        const users = await usersCollection.find(query).toArray();
         res.send(users);
       } catch (error) {
         console.error(error);
@@ -80,6 +85,99 @@ async function run() {
       } catch (err) {
         console.error(err);
         res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // tutor related API
+    // get tutors
+    app.get('/tutors', async (req, res) => {
+        try{
+            const {email} = req.query;
+            let query = {};
+            if(email) query.email = email;
+            const tutors = await tutorsCollection.find(query).toArray();
+            res.send(tutors);
+        }catch(error){
+             console.error(error);
+        res.status(500).send({ message: "Failed to fetch tutors" });
+        }
+    })
+
+    // posting tutors
+    app.post("/tutors", async (req, res) => {
+      try {
+        const {
+          name,
+          email,
+          qualification,
+          institution,
+          idCardURL,
+          district,
+          location,
+          experienceMonths,
+          experienceYears,
+          salary,
+          subjects,
+          mode,
+          bio,
+        } = req.body;
+
+        if (!name || !email || !idCardURL || !subjects?.length) {
+          return res.status(400).send({
+            success: false,
+            message: "Missing required fields",
+          });
+        }
+        //   find user to get phone , photoURL
+        const userData = await usersCollection.findOne(
+          { email },
+          { projection: { phone: 1, photoURL: 1 } }
+        );
+        if (!userData) {
+          return res.status(404).send({
+            success: false,
+            message: "User not found in usersCollection",
+          });
+        }
+        // prevent duplicate tutor profile
+        const existing = await tutorsCollection.findOne({ email });
+        if (existing) {
+          return res.status(409).send({
+            success: false,
+            message: "You have already submitted a tutor application.",
+          });
+        }
+        const application = {
+          name,
+          email,
+          phone: userData.phone || "",
+          photoURL: userData.photoURL || "",
+          qualification,
+          institution,
+          idCardURL,
+          experienceYears,
+          experienceMonths,
+          subjects,
+          district,
+          location,
+          salary,
+          mode,
+          bio,
+          status: "pending",
+          submittedAt: new Date(),
+        };
+        const result = await tutorsCollection.insertOne(application);
+        res.send({
+          success: true,
+          message: "Tutor application submitted successfully",
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Tutor Application Error:", error);
+        res.status(500).send({
+          success: false,
+          message: "Internal server error",
+        });
       }
     });
 
