@@ -34,15 +34,32 @@ async function run() {
     //  users API
 
     // Get all users
-    app.get("/users", async (req, res) => {
+    app.get("/users",  async (req, res) => {
       try {
-        const { email } = req.query;
+        const { page = 1, limit = 10, email } = req.query;
 
-        let query = {};
+        const pageNumber = parseInt(page);
+        const limitNumber = parseInt(limit);
+
+        const query = {};
         if (email) query.email = email;
 
-        const users = await usersCollection.find(query).toArray();
-        res.send(users);
+        const totalUsers = await usersCollection.countDocuments(query);
+
+        // Paginated fetch
+        const users = await usersCollection
+          .find(query)
+          .skip((pageNumber - 1) * limitNumber)
+          .limit(limitNumber)
+          .toArray();
+
+        res.send({
+          page: pageNumber,
+          limit: limitNumber,
+          totalUsers,
+          totalPages: Math.ceil(totalUsers / limitNumber),
+          users,
+        });
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: "Failed to fetch users" });
@@ -90,18 +107,38 @@ async function run() {
 
     // tutor related API
     // get tutors
-    app.get('/tutors', async (req, res) => {
-        try{
-            const {email} = req.query;
-            let query = {};
-            if(email) query.email = email;
-            const tutors = await tutorsCollection.find(query).toArray();
-            res.send(tutors);
-        }catch(error){
-             console.error(error);
+    app.get("/tutors", async (req, res) => {
+      try {
+        const { email, page = 1, limit = 10 } = req.query;
+
+        const pageNumber = parseInt(page);
+        const limitNumber = parseInt(limit);
+
+        const query = email ? { email } : {};
+
+        const skip = (pageNumber - 1) * limitNumber;
+
+        const tutors = await tutorsCollection
+          .find(query)
+          .sort({ submittedAt: -1 }) 
+          .skip(skip)
+          .limit(limitNumber)
+          .toArray();
+
+        const totalTutors = await tutorsCollection.countDocuments(query);
+
+        res.send({
+          tutors,
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(totalTutors / limitNumber),
+          totalTutors,
+        });
+      } catch (error) {
+        console.error(error);
         res.status(500).send({ message: "Failed to fetch tutors" });
-        }
-    })
+      }
+    });
 
     // posting tutors
     app.post("/tutors", async (req, res) => {
