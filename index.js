@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const app = express();
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 3000;
 const bcrypt = require("bcrypt");
 
@@ -31,10 +31,21 @@ async function run() {
     const applicationsCollection = db.collection("applications");
     const reviewsCollection = db.collection("reviews");
 
+    // indexing
+    await tuitionsCollection.createIndex(
+      { idempotencyKey: 1 },
+      { unique: true }
+    );
+    await tuitionsCollection.createIndex({ postedAt: -1 });
+    await tuitionsCollection.createIndex({ subjects: 1 });
+    await tuitionsCollection.createIndex({ district: 1 });
+    await tuitionsCollection.createIndex({ minBudget: 1 });
+    await tuitionsCollection.createIndex({ maxBudget: 1 });
+
     //  users API
 
     // Get all users
-    app.get("/users",  async (req, res) => {
+    app.get("/users", async (req, res) => {
       try {
         const { page = 1, limit = 10, email } = req.query;
 
@@ -46,7 +57,6 @@ async function run() {
 
         const totalUsers = await usersCollection.countDocuments(query);
 
-        // Paginated fetch
         const users = await usersCollection
           .find(query)
           .skip((pageNumber - 1) * limitNumber)
@@ -107,25 +117,41 @@ async function run() {
 
     // tutor related API
     // get tutors
+    app.get("/tutors/latest", async (req, res) => {
+      try {
+        const tutors = await tutorsCollection
+          .find()
+          .sort({ submittedAt: -1 })
+          .limit(6)
+          .toArray();
+
+        res.send({ tutors })
+      } catch (error) {
+        console.error("Latest tutors error:", error);
+        res.status(500).send({ message: "Failed to fetch latest tutors" });
+      }
+    });
+
     app.get("/tutors", async (req, res) => {
       try {
-        const { email, page = 1, limit = 10 } = req.query;
-
-        const pageNumber = parseInt(page);
-        const limitNumber = parseInt(limit);
-
-        const query = email ? { email } : {};
-
+        const { email, status, page = 1, limit = 10 } = req.query;
+        const pageNumber = Number(page);
+        const limitNumber = Number(limit);
         const skip = (pageNumber - 1) * limitNumber;
-
+        const query = {};
+        if (email) query.email = email;
+        if (status) query.status = status;
+        const sortQuery = {
+          status: 1,
+          submittedAt: -1,
+        };
+        const totalTutors = await tutorsCollection.countDocuments(query);
         const tutors = await tutorsCollection
           .find(query)
-          .sort({ submittedAt: -1 }) 
+          .sort(sortQuery)
           .skip(skip)
           .limit(limitNumber)
           .toArray();
-
-        const totalTutors = await tutorsCollection.countDocuments(query);
 
         res.send({
           tutors,
@@ -135,7 +161,7 @@ async function run() {
           totalTutors,
         });
       } catch (error) {
-        console.error(error);
+        console.error("Get tutors error:", error);
         res.status(500).send({ message: "Failed to fetch tutors" });
       }
     });
@@ -155,6 +181,7 @@ async function run() {
           experienceYears,
           salary,
           subjects,
+          time,
           mode,
           bio,
         } = req.body;
@@ -196,6 +223,7 @@ async function run() {
           experienceMonths,
           subjects,
           district,
+          time,
           location,
           salary,
           mode,
@@ -209,8 +237,188 @@ async function run() {
           message: "Tutor application submitted successfully",
           insertedId: result.insertedId,
         });
-      } catch (error) {
-        console.error("Tutor Application Error:", error);
+      } catch (err) {
+        console.error("Tutor Application Error:", err);
+        res.status(500).send({
+          success: false,
+          message: "Internal server error",
+        });
+      }
+    });
+
+    // tuitions API
+    // get tuitions
+    app.get("/tuitions/latest", async (req, res) => {
+      try {
+        const latestTuitions = await tuitionsCollection
+          .find({ status: "open" })
+          .sort({ postedAt: -1 })
+          .limit(6)
+          .toArray();
+
+        res.send({latestTuitions});
+      } catch (err) {
+        console.error("Latest tuitions error:", err);
+        res.status(500).send({ message: "Failed to fetch latest tuitions" });
+      }
+    });
+
+    app.get("/tuitions", async (req, res) => {
+      try {
+        const {
+          page = 1,
+          limit = 10,
+          subject,
+          district,
+          location,
+          sortBy = "date",
+          order = "desc",
+        } = req.query;
+
+        const pageNumber = parseInt(page);
+        const limitNumber = parseInt(limit);
+        const skip = (pageNumber - 1) * limitNumber;
+
+        // 🔍 Build query
+        const query = { status: "open" };
+
+        if (subject) {
+          query.subjects = { $regex: subject, $options: "i" };
+        }
+
+        if (district) {
+          query.district = { $regex: district, $options: "i" };
+        }
+
+        if (location) {
+          query.location = { $regex: location, $options: "i" };
+        }
+
+        let sortQuery = { postedAt: -1 };
+
+        if (sortBy === "minBudget") {
+          sortQuery = { minBudget: order === "asc" ? 1 : -1 };
+        } else if (sortBy === "maxBudget") {
+          sortQuery = { maxBudget: order === "asc" ? 1 : -1 };
+        } else if (sortBy === "date") {
+          sortQuery = { postedAt: order === "asc" ? 1 : -1 };
+        }
+
+        const total = await tuitionsCollection.countDocuments(query);
+
+        const tuitions = await tuitionsCollection
+          .find(query)
+          .sort(sortQuery)
+          .skip(skip)
+          .limit(limitNumber)
+          .toArray();
+
+        res.send({
+          tuitions,
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(total / limitNumber),
+          totalTuitions: total,
+        });
+      } catch (err) {
+        console.error("Get tuitions error:", err);
+        res.status(500).send({ message: "Failed to fetch tuitions" });
+      }
+    });
+
+    // post tuitions
+    app.post("/tuitions", async (req, res) => {
+      try {
+        const {
+          email,
+          subjects,
+          classLevel,
+          district,
+          location,
+          days,
+          time,
+          duration,
+          minBudget,
+          maxBudget,
+          description,
+          mode,
+          idempotencyKey,
+        } = req.body;
+
+        if (
+          !email ||
+          !subjects?.length ||
+          !classLevel ||
+          !mode ||
+          !district ||
+          !idempotencyKey
+        ) {
+          return res.status(400).send({
+            success: false,
+            message: "Missing required fields",
+          });
+        }
+        const existing = await tuitionsCollection.findOne({
+          idempotencyKey,
+        });
+
+        if (existing) {
+          return res.send({
+            success: true,
+            message: "Tuition already posted (duplicate request prevented)",
+            insertedId: existing._id,
+          });
+        }
+
+        const userData = await usersCollection.findOne(
+          { email },
+          {
+            projection: {
+              _id: 1,
+              name: 1,
+              phone: 1,
+              photoURL: 1,
+            },
+          }
+        );
+
+        if (!userData) {
+          return res.status(404).send({
+            success: false,
+            message:
+              "User not found in usersCollection . Tuitions cannot be posted",
+          });
+        }
+
+        const tuitionRequest = {
+          userId: userData._id,
+          name: userData.name,
+          email,
+          phone: userData.phone || "",
+          photoURL: userData.photoURL || "",
+          classLevel,
+          subjects,
+          district,
+          location,
+          days,
+          time,
+          duration,
+          minBudget,
+          maxBudget,
+          description,
+          mode,
+          postedAt: new Date(),
+          status: "open",
+          idempotencyKey,
+        };
+        const result = await tuitionsCollection.insertOne(tuitionRequest);
+        res.send({
+          success: true,
+          message: "Tuition posted successfully",
+          insertedId: result.insertedId,
+        });
+      } catch (err) {
+        console.error("Tuition Post Error:", err);
         res.status(500).send({
           success: false,
           message: "Internal server error",
