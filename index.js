@@ -5,11 +5,36 @@ const app = express();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 3000;
 const bcrypt = require("bcrypt");
+const admin = require("firebase-admin");
 
+const serviceAccount = require("./etuition-firebase-adminsdk.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 // middleware
 app.use(express.json());
 app.use(cors());
 const saltRounds = 10;
+// Firebase token verification middleware
+const verifyFBToken = async (req, res, next) => {
+  const token = req.headers.authorization;
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized access , no token" });
+  }
+  try {
+    const idToken = token.split(" ")[1];
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    console.log("Decoded Firebase token:", decoded);
+    req.decoded_email = decoded.email;
+    next();
+  } catch (err) {
+    console.error("Firebase token verification error:", err);
+    return res
+      .status(401)
+      .send({ message: "Unauthorized access , invalid token" });
+  }
+};
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.eemz9pt.mongodb.net/?appName=Cluster0`;
 const client = new MongoClient(uri, {
@@ -116,7 +141,7 @@ async function run() {
     });
 
     // tutor related API
-    // get tutors
+    // get latest tutors
     app.get("/tutors/latest", async (req, res) => {
       try {
         const tutors = await tutorsCollection
@@ -125,13 +150,13 @@ async function run() {
           .limit(6)
           .toArray();
 
-        res.send({ tutors })
+        res.send({ tutors });
       } catch (error) {
         console.error("Latest tutors error:", error);
         res.status(500).send({ message: "Failed to fetch latest tutors" });
       }
     });
-
+    // get all tutors
     app.get("/tutors", async (req, res) => {
       try {
         const { email, status, page = 1, limit = 10 } = req.query;
@@ -247,7 +272,7 @@ async function run() {
     });
 
     // tuitions API
-    // get tuitions
+    // get latest tuitions
     app.get("/tuitions/latest", async (req, res) => {
       try {
         const latestTuitions = await tuitionsCollection
@@ -256,14 +281,14 @@ async function run() {
           .limit(6)
           .toArray();
 
-        res.send({latestTuitions});
+        res.send({ latestTuitions });
       } catch (err) {
         console.error("Latest tuitions error:", err);
         res.status(500).send({ message: "Failed to fetch latest tuitions" });
       }
     });
-
-    app.get("/tuitions", async (req, res) => {
+    // get all tuitions
+    app.get("/tuitions", verifyFBToken, async (req, res) => {
       try {
         const {
           page = 1,
@@ -312,7 +337,6 @@ async function run() {
           .skip(skip)
           .limit(limitNumber)
           .toArray();
-
         res.send({
           tuitions,
           page: pageNumber,
