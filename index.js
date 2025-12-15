@@ -157,7 +157,7 @@ async function run() {
       }
     });
     // get all tutors
-    app.get("/tutors", async (req, res) => {
+    app.get("/tutors", verifyFBToken, async (req, res) => {
       try {
         const { email, status, page = 1, limit = 10 } = req.query;
         const pageNumber = Number(page);
@@ -192,7 +192,7 @@ async function run() {
     });
 
     // posting tutors
-    app.post("/tutors", async (req, res) => {
+    app.post("/tutors", verifyFBToken, async (req, res) => {
       try {
         const {
           name,
@@ -290,68 +290,90 @@ async function run() {
     // get all tuitions
     app.get("/tuitions", verifyFBToken, async (req, res) => {
       try {
-        const {
+        let {
           page = 1,
           limit = 10,
           subject,
           district,
           location,
-          sortBy = "date",
+          sortBy = "date", // date | budget
           order = "desc",
         } = req.query;
 
         const pageNumber = parseInt(page);
-        const limitNumber = parseInt(limit);
+        const limitNumber = Math.min(parseInt(limit), 20);
         const skip = (pageNumber - 1) * limitNumber;
+        const sortOrder = order === "asc" ? 1 : -1;
 
-        // 🔍 Build query
-        const query = { status: "open" };
+        const matchStage = { status: "open" };
 
         if (subject) {
-          query.subjects = { $regex: subject, $options: "i" };
+          matchStage.subjects = { $regex: subject, $options: "i" };
         }
-
         if (district) {
-          query.district = { $regex: district, $options: "i" };
+          matchStage.district = { $regex: district, $options: "i" };
         }
-
         if (location) {
-          query.location = { $regex: location, $options: "i" };
+          matchStage.location = { $regex: location, $options: "i" };
         }
 
-        let sortQuery = { postedAt: -1 };
+        const pipeline = [
+          { $match: matchStage },
 
-        if (sortBy === "minBudget") {
-          sortQuery = { minBudget: order === "asc" ? 1 : -1 };
-        } else if (sortBy === "maxBudget") {
-          sortQuery = { maxBudget: order === "asc" ? 1 : -1 };
-        } else if (sortBy === "date") {
-          sortQuery = { postedAt: order === "asc" ? 1 : -1 };
-        }
+          {
+            $addFields: {
+              avgBudget: {
+                $avg: ["$minBudget", "$maxBudget"],
+              },
+            },
+          },
 
-        const total = await tuitionsCollection.countDocuments(query);
+          // Sorting
+          {
+            $sort:
+              sortBy === "budget"
+                ? { avgBudget: sortOrder }
+                : { postedAt: sortOrder },
+          },
 
-        const tuitions = await tuitionsCollection
-          .find(query)
-          .sort(sortQuery)
-          .skip(skip)
-          .limit(limitNumber)
-          .toArray();
+          { $skip: skip },
+          { $limit: limitNumber },
+
+          {
+            $project: {
+              classLevel: 1,
+              subjects: 1,
+              district: 1,
+              location: 1,
+              minBudget: 1,
+              maxBudget: 1,
+              mode: 1,
+              days: 1,
+              time: 1,
+              postedAt: 1,
+            },
+          },
+        ];
+
+        const [tuitions, total] = await Promise.all([
+          tuitionsCollection.aggregate(pipeline).toArray(),
+          tuitionsCollection.countDocuments(matchStage),
+        ]);
+
         res.send({
           tuitions,
           page: pageNumber,
           limit: limitNumber,
+          total,
           totalPages: Math.ceil(total / limitNumber),
-          totalTuitions: total,
         });
       } catch (err) {
         console.error("Get tuitions error:", err);
         res.status(500).send({ message: "Failed to fetch tuitions" });
       }
     });
-
     // post tuitions
-    app.post("/tuitions", async (req, res) => {
+    app.post("/tuitions", verifyFBToken, async (req, res) => {
       try {
         const {
           email,
