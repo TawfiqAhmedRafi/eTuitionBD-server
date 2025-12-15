@@ -372,6 +372,24 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch tuitions" });
       }
     });
+    // individual tuitions
+    app.get("/tuitions/:id", async (req, res) => {
+      const { id } = req.params;
+
+      try {
+        const tuition = await tuitionsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!tuition) {
+          return res.status(404).json({ message: "Tuition not found" });
+        }
+
+        res.json(tuition);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch tuition" });
+      }
+    });
     // post tuitions
     app.post("/tuitions", verifyFBToken, async (req, res) => {
       try {
