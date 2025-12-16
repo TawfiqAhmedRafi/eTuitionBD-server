@@ -159,18 +159,29 @@ async function run() {
     // get all tutors
     app.get("/tutors", verifyFBToken, async (req, res) => {
       try {
-        const { email, status, page = 1, limit = 10 } = req.query;
+        const {
+          email,
+          status,
+          page = 1,
+          limit = 10,
+          sortBy = "submittedAt",
+          order = "desc",
+        } = req.query;
+
         const pageNumber = Number(page);
         const limitNumber = Number(limit);
         const skip = (pageNumber - 1) * limitNumber;
+
         const query = {};
         if (email) query.email = email;
         if (status) query.status = status;
+
         const sortQuery = {
-          status: 1,
-          submittedAt: -1,
+          [sortBy]: order === "asc" ? 1 : -1,
         };
+
         const totalTutors = await tutorsCollection.countDocuments(query);
+
         const tutors = await tutorsCollection
           .find(query)
           .sort(sortQuery)
@@ -190,7 +201,65 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch tutors" });
       }
     });
+    // getting tutors by id
+    app.get("/tutors/:id", verifyFBToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const tutor = await tutorsCollection.findOne({ _id: new ObjectId(id) });
 
+        if (!tutor) {
+          return res.status(404).send({ message: "Tutor not found" });
+        }
+
+        res.send(tutor);
+      } catch (error) {
+        console.error("Get tutor error:", error);
+        res.status(500).send({ message: "Failed to fetch tutor" });
+      }
+    });
+    // patch tutor
+    app.patch("/tutors/:id", verifyFBToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const updateData = req.body;
+
+        const result = await tutorsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Tutor not found" });
+        }
+
+        res.send({
+          success: true,
+          modifiedCount: result.modifiedCount,
+        });
+      } catch (error) {
+        console.error("Patch tutor error:", error);
+        res.status(500).send({ message: "Failed to update tutor" });
+      }
+    });
+    // delete tutors
+    app.delete("/tutors/:id", verifyFBToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const result = await tutorsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).send({ message: "Tutor not found" });
+        }
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Delete tutor error:", error);
+        res.status(500).send({ message: "Failed to delete tutor" });
+      }
+    });
     // posting tutors
     app.post("/tutors", verifyFBToken, async (req, res) => {
       try {
@@ -422,57 +491,59 @@ async function run() {
     });
 
     // update tuition
-    // PATCH /tuitions/:id
-app.patch("/tuitions/:id", verifyFBToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const emailFromToken = req.decoded_email; 
-    const updateData = req.body;
 
-  
-    const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(id) });
+    app.patch("/tuitions/:id", verifyFBToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const emailFromToken = req.decoded_email;
+        const updateData = req.body;
 
-    if (!tuition) {
-      return res.status(404).send({ message: "Tuition not found" });
-    }
+        const tuition = await tuitionsCollection.findOne({
+          _id: new ObjectId(id),
+        });
 
-    if (tuition.email !== emailFromToken) {
-      return res.status(403).send({ message: "You are not allowed to update this tuition" });
-    }
-    const allowedFields = [
-      "classLevel",
-      "subjects",
-      "days",
-      "time",
-      "duration",
-      "minBudget",
-      "maxBudget",
-      "mode",
-      "description",
-      "status",
-    ];
+        if (!tuition) {
+          return res.status(404).send({ message: "Tuition not found" });
+        }
 
-    const filteredUpdate = {};
-    allowedFields.forEach((field) => {
-      if (field in updateData) filteredUpdate[field] = updateData[field];
+        if (tuition.email !== emailFromToken) {
+          return res
+            .status(403)
+            .send({ message: "You are not allowed to update this tuition" });
+        }
+        const allowedFields = [
+          "classLevel",
+          "subjects",
+          "days",
+          "time",
+          "duration",
+          "minBudget",
+          "maxBudget",
+          "mode",
+          "description",
+          "status",
+        ];
+
+        const filteredUpdate = {};
+        allowedFields.forEach((field) => {
+          if (field in updateData) filteredUpdate[field] = updateData[field];
+        });
+
+        const result = await tuitionsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: filteredUpdate }
+        );
+
+        if (result.modifiedCount === 1) {
+          return res.send({ message: "Tuition updated successfully" });
+        } else {
+          return res.status(400).send({ message: "No changes applied" });
+        }
+      } catch (err) {
+        console.error("Patch tuition error:", err);
+        res.status(500).send({ message: "Failed to update tuition" });
+      }
     });
-
-    const result = await tuitionsCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: filteredUpdate }
-    );
-
-    if (result.modifiedCount === 1) {
-      return res.send({ message: "Tuition updated successfully" });
-    } else {
-      return res.status(400).send({ message: "No changes applied" });
-    }
-  } catch (err) {
-    console.error("Patch tuition error:", err);
-    res.status(500).send({ message: "Failed to update tuition" });
-  }
-});
-
 
     // delete tuition
     app.delete("/tuitions/:id", verifyFBToken, async (req, res) => {
@@ -487,12 +558,10 @@ app.patch("/tuitions/:id", verifyFBToken, async (req, res) => {
         if (result.deletedCount === 1) {
           res.send({ success: true, message: "Tuition deleted successfully." });
         } else {
-          res
-            .status(403)
-            .send({
-              success: false,
-              message: "Not authorized or tuition not found.",
-            });
+          res.status(403).send({
+            success: false,
+            message: "Not authorized or tuition not found.",
+          });
         }
       } catch (err) {
         console.error("Delete tuition error:", err);
