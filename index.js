@@ -25,7 +25,7 @@ const verifyFBToken = async (req, res, next) => {
   try {
     const idToken = token.split(" ")[1];
     const decoded = await admin.auth().verifyIdToken(idToken);
-    console.log("Decoded Firebase token:", decoded);
+
     req.decoded_email = decoded.email;
     next();
   } catch (err) {
@@ -287,6 +287,7 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch latest tuitions" });
       }
     });
+
     // get all tuitions
     app.get("/tuitions", verifyFBToken, async (req, res) => {
       try {
@@ -372,6 +373,135 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch tuitions" });
       }
     });
+    // get tuitions by email
+    app.get("/dashboard/my-tuitions", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        let { page = 1, limit = 10 } = req.query;
+
+        const pageNumber = parseInt(page);
+        const limitNumber = Math.min(parseInt(limit), 10);
+        const skip = (pageNumber - 1) * limitNumber;
+
+        const query = { email };
+
+        const projection = {
+          subjects: 1,
+          days: 1,
+          time: 1,
+          minBudget: 1,
+          maxBudget: 1,
+          mode: 1,
+          status: 1,
+          postedAt: 1,
+        };
+
+        const [tuitions, total] = await Promise.all([
+          tuitionsCollection
+            .find(query, { projection })
+            .sort({ postedAt: -1 })
+            .skip(skip)
+            .limit(limitNumber)
+            .toArray(),
+
+          tuitionsCollection.countDocuments(query),
+        ]);
+
+        res.send({
+          tuitions,
+          page: pageNumber,
+          limit: limitNumber,
+          total,
+          totalPages: Math.ceil(total / limitNumber),
+        });
+      } catch (err) {
+        console.error("My tuitions fetch error:", err);
+        res.status(500).send({ message: "Failed to fetch my tuitions" });
+      }
+    });
+
+    // update tuition
+    // PATCH /tuitions/:id
+app.patch("/tuitions/:id", verifyFBToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const emailFromToken = req.decoded_email; 
+    const updateData = req.body;
+
+  
+    const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!tuition) {
+      return res.status(404).send({ message: "Tuition not found" });
+    }
+
+    if (tuition.email !== emailFromToken) {
+      return res.status(403).send({ message: "You are not allowed to update this tuition" });
+    }
+    const allowedFields = [
+      "classLevel",
+      "subjects",
+      "days",
+      "time",
+      "duration",
+      "minBudget",
+      "maxBudget",
+      "mode",
+      "description",
+      "status",
+    ];
+
+    const filteredUpdate = {};
+    allowedFields.forEach((field) => {
+      if (field in updateData) filteredUpdate[field] = updateData[field];
+    });
+
+    const result = await tuitionsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: filteredUpdate }
+    );
+
+    if (result.modifiedCount === 1) {
+      return res.send({ message: "Tuition updated successfully" });
+    } else {
+      return res.status(400).send({ message: "No changes applied" });
+    }
+  } catch (err) {
+    console.error("Patch tuition error:", err);
+    res.status(500).send({ message: "Failed to update tuition" });
+  }
+});
+
+
+    // delete tuition
+    app.delete("/tuitions/:id", verifyFBToken, async (req, res) => {
+      try {
+        const tuitionId = req.params.id;
+        const email = req.decoded_email;
+
+        const query = { _id: new ObjectId(tuitionId), email };
+
+        const result = await tuitionsCollection.deleteOne(query);
+
+        if (result.deletedCount === 1) {
+          res.send({ success: true, message: "Tuition deleted successfully." });
+        } else {
+          res
+            .status(403)
+            .send({
+              success: false,
+              message: "Not authorized or tuition not found.",
+            });
+        }
+      } catch (err) {
+        console.error("Delete tuition error:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to delete tuition." });
+      }
+    });
+
     // individual tuitions
     app.get("/tuitions/:id", async (req, res) => {
       const { id } = req.params;
@@ -472,7 +602,7 @@ async function run() {
           description,
           mode,
           postedAt: new Date(),
-          status: "open",
+          status: "pending",
           idempotencyKey,
         };
         const result = await tuitionsCollection.insertOne(tuitionRequest);
