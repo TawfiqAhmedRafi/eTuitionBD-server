@@ -618,8 +618,57 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch tuitions" });
       }
     });
+    // get tuitions for teachers
+    app.get(
+      "/dashboard/tutor-tuitions",
+      verifyFBToken,
+      verifyTutor,
+      async (req, res) => {
+        try {
+          const tutorEmail = req.decoded_email;
+          let { page = 1, limit = 10 } = req.query;
+          const pageNumber = parseInt(page);
+          const limitNumber = Math.min(parseInt(limit), 10);
+          const skip = (pageNumber - 1) * limitNumber;
+          const query = { tutorEmail };
+          const projection = {
+            subjects: 1,
+            days: 1,
+            status: 1,
+            salary: 1,
+            mode: 1,
+            startedAt: 1,
+            time: 1,
+            name: 1,
+            phone: 1,
+            email: 1,
+          };
+          const [tuitions, total] = await Promise.all([
+            tuitionsCollection
+              .find(query, { projection })
+              .sort({ assignedAt: -1 })
+              .skip(skip)
+              .limit(limitNumber)
+              .toArray(),
 
-    // get tuitions by email
+            tuitionsCollection.countDocuments(query),
+          ]);
+
+          res.send({
+            tuitions,
+            page: pageNumber,
+            limit: limitNumber,
+            total,
+            totalPages: Math.ceil(total / limitNumber),
+          });
+        } catch (err) {
+          console.error("Tutor tuitions fetch error:", err);
+          res.status(500).send({ message: "Failed to fetch tutor tuitions" });
+        }
+      }
+    );
+
+    // get tuitions by email for students
     app.get("/dashboard/my-tuitions", verifyFBToken, async (req, res) => {
       try {
         const email = req.decoded_email;
@@ -666,6 +715,53 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch my tuitions" });
       }
     });
+
+    //tutor closing tuition
+    app.patch("/tuitions/tutor/:id",
+      verifyFBToken,
+      verifyTutor,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const email = req.decoded_email;
+          const tuition = await tuitionsCollection.findOne({
+            _id: new ObjectId(id),
+          });
+          if (!tuition) {
+            return res.status(404).send({ message: "Tuition not found" });
+          }
+          if (email !== tuition.tutorEmail) {
+            return res
+              .status(403)
+              .send({ message: "You are not allowed to update this tuition" });
+          }
+          if (!["ongoing"].includes(tuition.status)) {
+            return res.status(400).send({
+              message: "Only ongoing tuitions can be closed",
+            });
+          }
+
+          const result = await tuitionsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                status: "closed",
+                closedAt: new Date(),
+              },
+            }
+          );
+
+          res.send({
+            success: true,
+            message: "Tuition closed successfully",
+            modifiedCount: result.modifiedCount,
+          });
+        } catch (err) {
+          console.error("Close tuition error:", err);
+          res.status(500).send({ message: "Failed to close tuition" });
+        }
+      }
+    );
 
     // update tuition
 
@@ -1020,14 +1116,13 @@ async function run() {
         const email = req.decoded_email;
         const { id } = req.params;
 
-        // find user
         const user = await usersCollection.findOne(
           { email },
           { projection: { _id: 1, role: 1 } }
         );
         const tutor = await tutorsCollection.findOne(
           { email },
-          { projection: { _ide: 1 } }
+          { projection: { _id: 1 } }
         );
 
         if (!user) {
@@ -1042,7 +1137,7 @@ async function run() {
 
         const result = await applicationsCollection.deleteOne({
           _id: new ObjectId(id),
-          status: "pending",
+          status: { $in: ["pending", "rejected"] },
           ...ownershipFilter,
         });
 
@@ -1295,7 +1390,7 @@ async function run() {
         res.status(500).send({ message: "Failed to create checkout session" });
       }
     });
-
+    // payment success
     app.patch("/payment-success", verifyFBToken, async (req, res) => {
       try {
         const sessionId = req.query.session_id;
