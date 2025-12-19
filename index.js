@@ -705,6 +705,23 @@ async function run() {
           if (field in updateData) filteredUpdate[field] = updateData[field];
         });
 
+        const newStatus = filteredUpdate.status;
+
+        if (newStatus === "closed") {
+          if (!["open", "ongoing"].includes(tuition.status)) {
+            return res
+              .status(400)
+              .send({ message: "Only open or ongoing tuition can be closed" });
+          }
+          filteredUpdate.closedAt = new Date();
+        }
+
+        if (tuition.status === "closed" && newStatus !== "closed") {
+          return res
+            .status(400)
+            .send({ message: "Closed Tuition cannot be updated" });
+        }
+
         const result = await tuitionsCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: filteredUpdate }
@@ -732,6 +749,10 @@ async function run() {
         const result = await tuitionsCollection.deleteOne(query);
 
         if (result.deletedCount === 1) {
+          await applicationsCollection.deleteMany({
+            tuitionId: new ObjectId(tuitionId),
+          });
+
           res.send({ success: true, message: "Tuition deleted successfully." });
         } else {
           res.status(403).send({
@@ -944,7 +965,8 @@ async function run() {
       }
     );
     // getting application for a particular tuition
-    app.get("/applications/has-applied/:tuitionId",
+    app.get(
+      "/applications/has-applied/:tuitionId",
       verifyFBToken,
       async (req, res) => {
         try {
@@ -961,7 +983,7 @@ async function run() {
               .status(404)
               .send({ message: "User not found", hasApplied: false });
           }
-          
+
           if (user.role !== "tutor") {
             return res.send({ hasApplied: false, role: user.role });
           }
@@ -1101,7 +1123,6 @@ async function run() {
                 tutorPhoto: application.tutorPhoto,
                 tutorEmail: tutor.email,
                 tutorPhone: tutor.phone,
-                salary: application.salary,
                 assignedAt: new Date(),
               },
             }
