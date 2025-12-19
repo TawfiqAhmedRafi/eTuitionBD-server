@@ -890,7 +890,8 @@ async function run() {
 
     // Applications API
     // my applications
-    app.get("/applications/my-applications",
+    app.get(
+      "/applications/my-applications",
       verifyFBToken,
       async (req, res) => {
         try {
@@ -923,14 +924,14 @@ async function run() {
                 experienceMonths: 1,
                 salary: 1,
                 coverLetter: 1,
-                location :1,
+                location: 1,
                 status: 1,
                 tuitionTime: 1,
                 days: 1,
                 classLevel: 1,
                 subjects: 1,
                 appliedAt: 1,
-                tutorId:1
+                tutorId: 1,
               },
             })
             .sort({ appliedAt: -1 })
@@ -943,8 +944,7 @@ async function run() {
       }
     );
     // getting application for a particular tuition
-    app.get(
-      "/applications/has-applied/:tuitionId",
+    app.get("/applications/has-applied/:tuitionId",
       verifyFBToken,
       async (req, res) => {
         try {
@@ -961,7 +961,7 @@ async function run() {
               .status(404)
               .send({ message: "User not found", hasApplied: false });
           }
-          y;
+          
           if (user.role !== "tutor") {
             return res.send({ hasApplied: false, role: user.role });
           }
@@ -1033,6 +1033,97 @@ async function run() {
       } catch (err) {
         console.error("Cancel application error:", err);
         res.status(500).send({ message: "Failed to cancel application" });
+      }
+    });
+    // updating application
+    app.patch("/applications/:id", verifyFBToken, async (req, res) => {
+      try {
+        const applicationId = req.params.id;
+        const { status } = req.body;
+
+        if (!applicationId) {
+          return res.status(400).send({ message: "Application id is missing" });
+        }
+
+        if (!["accepted", "rejected"].includes(status)) {
+          return res.status(400).send({ message: "Invalid status value" });
+        }
+
+        const application = await applicationsCollection.findOne({
+          _id: new ObjectId(applicationId),
+        });
+
+        if (!application) {
+          return res.status(404).send({ message: "Application not found" });
+        }
+
+        if (status === "accepted") {
+          const tuition = await tuitionsCollection.findOne({
+            _id: application.tuitionId,
+          });
+
+          if (tuition?.status === "assigned") {
+            return res
+              .status(400)
+              .send({ message: "Tuition already assigned" });
+          }
+
+          const tutor = await tutorsCollection.findOne({
+            _id: application.tutorId,
+          });
+
+          if (!tutor) {
+            return res.status(404).send({ message: "Tutor not found" });
+          }
+
+          await applicationsCollection.updateOne(
+            { _id: new ObjectId(applicationId) },
+            { $set: { status: "accepted" } }
+          );
+
+          await applicationsCollection.updateMany(
+            {
+              tuitionId: application.tuitionId,
+              status: "pending",
+              _id: { $ne: new ObjectId(applicationId) },
+            },
+            { $set: { status: "rejected" } }
+          );
+
+          await tuitionsCollection.updateOne(
+            { _id: application.tuitionId },
+            {
+              $set: {
+                status: "assigned",
+                tutorId: application.tutorId,
+                assignedApplicationId: application._id,
+                tutorName: application.tutorName,
+                tutorPhoto: application.tutorPhoto,
+                tutorEmail: tutor.email,
+                tutorPhone: tutor.phone,
+                salary: application.salary,
+                assignedAt: new Date(),
+              },
+            }
+          );
+
+          return res.send({
+            message:
+              "Application accepted, tuition assigned, other applications rejected",
+          });
+        }
+
+        await applicationsCollection.updateOne(
+          { _id: new ObjectId(applicationId) },
+          { $set: { status: "rejected" } }
+        );
+
+        res.send({ message: "Application rejected successfully" });
+      } catch (err) {
+        console.error("Update application status error:", err);
+        res
+          .status(500)
+          .send({ message: "Failed to update application status" });
       }
     });
 
