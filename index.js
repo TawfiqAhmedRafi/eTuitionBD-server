@@ -71,6 +71,9 @@ async function run() {
       { tuitionId: 1, tutorId: 1 },
       { unique: true }
     );
+    await paymentsCollection.createIndex({studentEmail: 1, paidAt: -1 });
+    await paymentsCollection.createIndex({tutorEmail: 1, paidAt: -1 });
+    await paymentsCollection.createIndex({ paidAt: -1 });
 
     // middlewares
     const verifyAdmin = async (req, res, next) => {
@@ -717,7 +720,8 @@ async function run() {
     });
 
     //tutor closing tuition
-    app.patch("/tuitions/tutor/:id",
+    app.patch(
+      "/tuitions/tutor/:id",
       verifyFBToken,
       verifyTutor,
       async (req, res) => {
@@ -1318,6 +1322,53 @@ async function run() {
       }
     });
 
+    // getting payments
+    app.get("/payments", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const page = Math.max(parseInt(req.query.page) || 1, 1);
+        const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+        const skip = (page - 1) * limit;
+        const user = await usersCollection.findOne({ email });
+        if (!user) {
+          return res.status(401).send({ message: "User not found" });
+        }
+        let query = {};
+
+        if (user.role === "student") {
+          query.studentEmail = email;
+        } else if (user.role === "tutor") {
+          query.tutorEmail = email;
+        } else if (user.role === "admin") {
+          query = {};
+        } else {
+          return res.status(403).send({ message: "Unauthorized role" });
+        }
+
+        const total = await paymentsCollection.countDocuments(query);
+
+        const payments = await paymentsCollection
+          .find(query)
+          .sort({ paidAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+
+        res.send({
+          payments,
+          pagination: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit),
+          },
+        });
+      } catch (err) {
+        console.error("Fetch payments error:", err);
+        res.status(500).send({ message: "Failed to fetch payments" });
+      }
+    });
+
     // payment API
     app.post("/payment-checkout-session", verifyFBToken, async (req, res) => {
       try {
@@ -1348,41 +1399,36 @@ async function run() {
             .send({ message: "Payment allowed only for assigned tuition" });
         }
 
-        const session = await stripe.checkout.sessions.create(
-          {
-            payment_method_types: ["card"],
-            mode: "payment",
-            customer_email: tuition.email,
-            line_items: [
-              {
-                price_data: {
-                  currency: "bdt",
-                  product_data: {
-                    name: `Tuition Fee - ${tuition.subjects.join(", ")}`,
-                    description: `Tutor: ${tuition.tutorName} | ${tuition.days} days/week | ${tuition.time}`,
-                  },
-                  unit_amount: parseInt(tuition.salary) * 100,
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ["card"],
+          mode: "payment",
+          customer_email: tuition.email,
+          line_items: [
+            {
+              price_data: {
+                currency: "bdt",
+                product_data: {
+                  name: `Tuition Fee - ${tuition.subjects.join(", ")}`,
+                  description: `Tutor: ${tuition.tutorName} | ${tuition.days} days/week | ${tuition.time}`,
                 },
-                quantity: 1,
+                unit_amount: parseInt(tuition.salary) * 100,
               },
-            ],
-
-            metadata: {
-              tuitionId: tuition._id.toString(),
-              studentId: tuition.userId.toString(),
-              tutorId: tuition.tutorId.toString(),
-              assignedApplicationId:
-                tuition.assignedApplicationId?.toString() || "",
-              purpose: "tuition_payment",
+              quantity: 1,
             },
+          ],
 
-            success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-failure`,
+          metadata: {
+            tuitionId: tuition._id.toString(),
+            studentId: tuition.userId.toString(),
+            tutorId: tuition.tutorId.toString(),
+            assignedApplicationId:
+              tuition.assignedApplicationId?.toString() || "",
+            purpose: "tuition_payment",
           },
-          {
-            idempotencyKey: tuition.idempotencyKey,
-          }
-        );
+
+          success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-failure`,
+        });
 
         res.send({ url: session.url });
       } catch (err) {
@@ -1412,6 +1458,7 @@ async function run() {
           return res.send({
             message: "Payment already recorded",
             transactionId,
+            tuitionId: paymentExist.tuitionId,
             paymentId: paymentExist._id,
           });
         }
@@ -1446,9 +1493,13 @@ async function run() {
           studentEmail: session.customer_email,
           tutorEmail: tuition.tutorEmail,
           paymentStatus: session.payment_status,
-          idempotencyKey: tuition.idempotencyKey,
         };
         await paymentsCollection.insertOne(paymentInfo);
+        await paymentsCollection.updateOne(
+          { transactionId },
+          { $setOnInsert: paymentInfo },
+          { upsert: true }
+        );
         res.send({
           success: true,
           transactionId,
