@@ -8,6 +8,7 @@ const bcrypt = require("bcrypt");
 const admin = require("firebase-admin");
 
 const serviceAccount = require("./etuition-firebase-adminsdk.json");
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -1123,6 +1124,7 @@ async function run() {
                 tutorPhoto: application.tutorPhoto,
                 tutorEmail: tutor.email,
                 tutorPhone: tutor.phone,
+                salary: application.salary,
                 assignedAt: new Date(),
               },
             }
@@ -1147,7 +1149,6 @@ async function run() {
           .send({ message: "Failed to update application status" });
       }
     });
-
     // posting application
     app.post("/applications", verifyFBToken, verifyTutor, async (req, res) => {
       try {
@@ -1219,6 +1220,148 @@ async function run() {
       } catch (err) {
         console.log("apply tuition error", err);
         res.status(500).send({ message: "Failed to apply for tuition" });
+      }
+    });
+
+    // payment API
+    app.post("/payment-checkout-session", verifyFBToken, async (req, res) => {
+      try {
+        const { tuitionId } = req.body;
+        const emailFromToken = req.decoded_email;
+
+        if (!tuitionId) {
+          return res.status(400).send({ message: "Tuition id is required" });
+        }
+
+        const tuition = await tuitionsCollection.findOne({
+          _id: new ObjectId(tuitionId),
+        });
+
+        if (!tuition) {
+          return res.status(404).send({ message: "Tuition not found" });
+        }
+
+        if (tuition.email !== emailFromToken) {
+          return res
+            .status(403)
+            .send({ message: "Unauthorized payment attempt" });
+        }
+
+        if (tuition.status !== "assigned") {
+          return res
+            .status(400)
+            .send({ message: "Payment allowed only for assigned tuition" });
+        }
+
+        const session = await stripe.checkout.sessions.create(
+          {
+            payment_method_types: ["card"],
+            mode: "payment",
+            customer_email: tuition.email,
+            line_items: [
+              {
+                price_data: {
+                  currency: "bdt",
+                  product_data: {
+                    name: `Tuition Fee - ${tuition.subjects.join(", ")}`,
+                    description: `Tutor: ${tuition.tutorName} | ${tuition.days} days/week | ${tuition.time}`,
+                  },
+                  unit_amount: parseInt(tuition.salary) * 100,
+                },
+                quantity: 1,
+              },
+            ],
+
+            metadata: {
+              tuitionId: tuition._id.toString(),
+              studentId: tuition.userId.toString(),
+              tutorId: tuition.tutorId.toString(),
+              assignedApplicationId:
+                tuition.assignedApplicationId?.toString() || "",
+              purpose: "tuition_payment",
+            },
+
+            success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-failure`,
+          },
+          {
+            idempotencyKey: tuition.idempotencyKey,
+          }
+        );
+
+        res.send({ url: session.url });
+      } catch (err) {
+        console.error("Create checkout session error:", err);
+        res.status(500).send({ message: "Failed to create checkout session" });
+      }
+    });
+
+    app.patch("/payment-success", verifyFBToken, async (req, res) => {
+      try {
+        const sessionId = req.query.session_id;
+        if (!sessionId) {
+          return res.status(400).send({ message: "Session id missing" });
+        }
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (session.customer_email !== req.decoded_email) {
+          return res.status(403).send({ message: "Forbidden access" });
+        }
+        if (session.payment_status !== "paid") {
+          return res.status(400).send({ message: "Payment not completed" });
+        }
+        const transactionId = session.payment_intent;
+        const paymentExist = await paymentsCollection.findOne({
+          transactionId,
+        });
+        if (paymentExist) {
+          return res.send({
+            message: "Payment already recorded",
+            transactionId,
+            paymentId: paymentExist._id,
+          });
+        }
+
+        const tuitionId = session.metadata.tuitionId;
+        const tuition = await tuitionsCollection.findOne({
+          _id: new ObjectId(tuitionId),
+        });
+        if (!tuition) {
+          return res.status(404).send({ message: "Tuition not found" });
+        }
+        await tuitionsCollection.updateOne(
+          {
+            _id: tuition._id,
+          },
+          {
+            $set: {
+              status: "ongoing",
+              startedAt: new Date(),
+            },
+          }
+        );
+        const paymentInfo = {
+          tuitionId: tuition._id,
+          studentId: tuition.userId,
+          tutorId: tuition.tutorId,
+          applicationId: tuition.assignedApplicationId,
+          transactionId,
+          paidAt: new Date(),
+          amount: session.amount_total / 100,
+          salary: session.amount_total * 0.004,
+          studentEmail: session.customer_email,
+          tutorEmail: tuition.tutorEmail,
+          paymentStatus: session.payment_status,
+          idempotencyKey: tuition.idempotencyKey,
+        };
+        await paymentsCollection.insertOne(paymentInfo);
+        res.send({
+          success: true,
+          transactionId,
+          tuitionId,
+        });
+      } catch (err) {
+        console.error("Payment success error:", err);
+        res.status(500).send({ message: "Payment verification failed" });
       }
     });
 
