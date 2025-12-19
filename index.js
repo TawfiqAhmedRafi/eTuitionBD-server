@@ -66,40 +66,178 @@ async function run() {
     await tuitionsCollection.createIndex({ district: 1 });
     await tuitionsCollection.createIndex({ minBudget: 1 });
     await tuitionsCollection.createIndex({ maxBudget: 1 });
+    await applicationsCollection.createIndex(
+      { tuitionId: 1, tutorId: 1 },
+      { unique: true }
+    );
+
+    // middlewares
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded_email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden Access" });
+      }
+      next();
+    };
+    const verifyTutor = async (req, res, next) => {
+      try {
+        const email = req.decoded_email;
+
+        if (!email) {
+          return res.status(401).send({ message: "Unauthorized access" });
+        }
+
+        const tutor = await tutorsCollection.findOne({ email });
+
+        if (!tutor) {
+          return res
+            .status(403)
+            .send({ message: "Access denied: Tutor not found" });
+        }
+        if (tutor.status !== "approved") {
+          return res.status(403).send({
+            message: "Access denied: Tutor is not verified",
+          });
+        }
+        req.tutor = tutor;
+
+        next();
+      } catch (err) {
+        console.error("verifyTutor error:", err);
+        res.status(500).send({ message: "Tutor verification failed" });
+      }
+    };
 
     //  users API
 
     // Get all users
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyFBToken, async (req, res) => {
       try {
-        const { page = 1, limit = 10, email } = req.query;
+        const { page = 1, limit = 10, email, all = "false" } = req.query;
 
-        const pageNumber = parseInt(page);
-        const limitNumber = parseInt(limit);
+        const pageNumber = Number(page);
+        const limitNumber = Number(limit);
 
         const query = {};
         if (email) query.email = email;
 
         const totalUsers = await usersCollection.countDocuments(query);
 
-        const users = await usersCollection
-          .find(query)
-          .skip((pageNumber - 1) * limitNumber)
-          .limit(limitNumber)
-          .toArray();
+        let cursor = usersCollection.find(query);
+
+        // Apply pagination ONLY if not requesting all
+        if (all !== "true") {
+          cursor = cursor
+            .skip((pageNumber - 1) * limitNumber)
+            .limit(limitNumber);
+        }
+
+        const users = await cursor.toArray();
 
         res.send({
-          page: pageNumber,
-          limit: limitNumber,
-          totalUsers,
-          totalPages: Math.ceil(totalUsers / limitNumber),
           users,
+          page: all === "true" ? 1 : pageNumber,
+          limit: all === "true" ? totalUsers : limitNumber,
+          totalUsers,
+          totalPages: all === "true" ? 1 : Math.ceil(totalUsers / limitNumber),
         });
       } catch (error) {
-        console.error(error);
+        console.error("Get users error:", error);
         res.status(500).send({ message: "Failed to fetch users" });
       }
     });
+    // Get the role of the logged-in user
+    app.get("/user-role", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send({ role: user.role });
+      } catch (error) {
+        console.error("Get user role error:", error);
+        res.status(500).send({ message: "Failed to fetch user role" });
+      }
+    });
+    // patch user
+    app.patch("/users/:id", verifyFBToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const updateData = req.body;
+
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        res.send(result);
+      } catch (error) {
+        console.error("Patch user error:", error);
+        res.status(500).send({ message: "Failed to update user" });
+      }
+    });
+    // admin only patch
+    app.patch(
+      "/users/:id/role",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { role, isBanned } = req.body;
+          const updateData = {};
+
+          if (role) {
+            const allowedRoles = ["admin", "student", "tutor"];
+            if (!allowedRoles.includes(role)) {
+              return res.status(400).send({ message: "Invalid role" });
+            }
+            updateData.role = role;
+          }
+          if (typeof isBanned === "boolean") {
+            updateData.isBanned = isBanned;
+          }
+
+          if (Object.keys(updateData).length === 0) {
+            return res
+              .status(400)
+              .send({ message: "No valid fields to update" });
+          }
+
+          const result = await usersCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: updateData }
+          );
+
+          res.send(result);
+        } catch (error) {
+          console.error("Admin role patch error:", error);
+          res.status(500).send({ message: "Failed to update user" });
+        }
+      }
+    );
+    // delete user
+    app.delete("/users/:id", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const result = await usersCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        res.send(result);
+      } catch (error) {
+        console.error("Delete user error:", error);
+        res.status(500).send({ message: "Failed to delete user" });
+      }
+    });
+
     // post user
     app.post("/users", async (req, res) => {
       try {
@@ -154,6 +292,26 @@ async function run() {
       } catch (error) {
         console.error("Latest tutors error:", error);
         res.status(500).send({ message: "Failed to fetch latest tutors" });
+      }
+    });
+    // tutor Info district
+    app.get("/tutor-info", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const tutor = await tutorsCollection.findOne(
+          { email },
+          { projection: { _id: 1, district: 1 } }
+        );
+
+        if (!tutor) {
+          return res.status(404).send({ message: "Tutor not found" });
+        }
+
+        res.send(tutor);
+      } catch (err) {
+        console.error("Fetch tutor info error:", err);
+        res.status(500).send({ message: "Failed to fetch tutor info" });
       }
     });
     // get all tutors
@@ -218,7 +376,7 @@ async function run() {
       }
     });
     // patch tutor
-    app.patch("/tutors/:id", verifyFBToken, async (req, res) => {
+    app.patch("/tutors/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         const updateData = req.body;
@@ -242,10 +400,14 @@ async function run() {
       }
     });
     // delete tutors
-    app.delete("/tutors/:id", verifyFBToken, async (req, res) => {
+    app.delete("/tutors/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
 
+        const tutor = await tutorsCollection.findOne({ _id: new ObjectId(id) });
+        if (!tutor) {
+          return res.status(404).send({ message: "Tutor not found" });
+        }
         const result = await tutorsCollection.deleteOne({
           _id: new ObjectId(id),
         });
@@ -253,6 +415,10 @@ async function run() {
         if (result.deletedCount === 0) {
           return res.status(404).send({ message: "Tutor not found" });
         }
+        await usersCollection.updateOne(
+          { email: tutor.email },
+          { $set: { role: "student" } }
+        );
 
         res.send({ success: true });
       } catch (error) {
@@ -364,9 +530,10 @@ async function run() {
           page = 1,
           limit = 10,
           subject,
+          classLevel,
           district,
           location,
-          sortBy = "date", // date | budget
+          sortBy = "date",
           order = "desc",
         } = req.query;
 
@@ -377,12 +544,22 @@ async function run() {
 
         const matchStage = { status: "open" };
 
+        // subject
         if (subject) {
           matchStage.subjects = { $regex: subject, $options: "i" };
         }
+
+        //  Class
+        if (classLevel) {
+          matchStage.classLevel = { $regex: classLevel, $options: "i" };
+        }
+
+        //  District
         if (district) {
           matchStage.district = { $regex: district, $options: "i" };
         }
+
+        //  Location
         if (location) {
           matchStage.location = { $regex: location, $options: "i" };
         }
@@ -397,8 +574,6 @@ async function run() {
               },
             },
           },
-
-          // Sorting
           {
             $sort:
               sortBy === "budget"
@@ -442,6 +617,7 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch tuitions" });
       }
     });
+
     // get tuitions by email
     app.get("/dashboard/my-tuitions", verifyFBToken, async (req, res) => {
       try {
@@ -572,13 +748,36 @@ async function run() {
     });
 
     // individual tuitions
-    app.get("/tuitions/:id", async (req, res) => {
+    app.get("/tuitions/:id", verifyFBToken, async (req, res) => {
       const { id } = req.params;
 
       try {
-        const tuition = await tuitionsCollection.findOne({
-          _id: new ObjectId(id),
-        });
+        const tuition = await tuitionsCollection.findOne(
+          {
+            _id: new ObjectId(id),
+          },
+          {
+            projection: {
+              name: 1,
+              email: 1,
+              phone: 1,
+              photoURL: 1,
+              status: 1,
+              classLevel: 1,
+              subjects: 1,
+              minBudget: 1,
+              maxBudget: 1,
+              location: 1,
+              district: 1,
+              mode: 1,
+              days: 1,
+              time: 1,
+              duration: 1,
+              postedAt: 1,
+              description: 1,
+            },
+          }
+        );
 
         if (!tuition) {
           return res.status(404).json({ message: "Tuition not found" });
@@ -671,7 +870,7 @@ async function run() {
           description,
           mode,
           postedAt: new Date(),
-          status: "pending",
+          status: "open",
           idempotencyKey,
         };
         const result = await tuitionsCollection.insertOne(tuitionRequest);
@@ -686,6 +885,228 @@ async function run() {
           success: false,
           message: "Internal server error",
         });
+      }
+    });
+
+    // Applications API
+    // my applications
+    app.get("/applications/my-applications",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const email = req.decoded_email;
+          const user = await usersCollection.findOne(
+            { email },
+            { projection: { role: 1, _id: 1 } }
+          );
+          if (!user) {
+            return res.status(404).send({ message: "User Not found" });
+          }
+          const tutor = await tutorsCollection.findOne(
+            { email },
+            { projection: { _id: 1 } }
+          );
+          let filter = {};
+          if (user.role === "tutor") {
+            filter = { tutorId: tutor._id };
+          } else if (user.role === "student") {
+            filter = { studentId: user._id };
+          }
+          const applications = await applicationsCollection
+            .find(filter, {
+              projection: {
+                tutorName: 1,
+                tutorPhoto: 1,
+                qualification: 1,
+                institution: 1,
+                experienceYears: 1,
+                experienceMonths: 1,
+                salary: 1,
+                coverLetter: 1,
+                location :1,
+                status: 1,
+                tuitionTime: 1,
+                days: 1,
+                classLevel: 1,
+                subjects: 1,
+                appliedAt: 1,
+                tutorId:1
+              },
+            })
+            .sort({ appliedAt: -1 })
+            .toArray();
+          res.send({ applications });
+        } catch (err) {
+          console.error("Fetch my applications error:", err);
+          res.status(500).send({ message: "Failed to fetch applications" });
+        }
+      }
+    );
+    // getting application for a particular tuition
+    app.get(
+      "/applications/has-applied/:tuitionId",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const email = req.decoded_email;
+          const { tuitionId } = req.params;
+
+          const user = await usersCollection.findOne(
+            { email },
+            { projection: { role: 1 } }
+          );
+
+          if (!user) {
+            return res
+              .status(404)
+              .send({ message: "User not found", hasApplied: false });
+          }
+          y;
+          if (user.role !== "tutor") {
+            return res.send({ hasApplied: false, role: user.role });
+          }
+          const tutor = await tutorsCollection.findOne(
+            { email },
+            { projection: { _id: 1 } }
+          );
+
+          if (!tutor) {
+            return res
+              .status(404)
+              .send({ message: "Tutor profile not found", hasApplied: false });
+          }
+
+          const exists = await applicationsCollection.findOne(
+            { tuitionId: new ObjectId(tuitionId), tutorId: tutor._id },
+            { projection: { _id: 1 } }
+          );
+
+          return res.send({ hasApplied: !!exists });
+        } catch (err) {
+          console.error("Has-applied error:", err);
+          res.status(500).send({
+            message: "Failed to check application status",
+            hasApplied: false,
+          });
+        }
+      }
+    );
+    // delete application
+    app.delete("/applications/:id", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const { id } = req.params;
+
+        // find user
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { _id: 1, role: 1 } }
+        );
+        const tutor = await tutorsCollection.findOne(
+          { email },
+          { projection: { _ide: 1 } }
+        );
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        // ownership condition
+        const ownershipFilter =
+          user.role === "tutor"
+            ? { tutorId: tutor._id }
+            : { studentId: user._id };
+
+        const result = await applicationsCollection.deleteOne({
+          _id: new ObjectId(id),
+          status: "pending",
+          ...ownershipFilter,
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(403).send({
+            message: "Cannot cancel this application",
+          });
+        }
+
+        res.send({ message: "Application cancelled successfully" });
+      } catch (err) {
+        console.error("Cancel application error:", err);
+        res.status(500).send({ message: "Failed to cancel application" });
+      }
+    });
+
+    // posting application
+    app.post("/applications", verifyFBToken, verifyTutor, async (req, res) => {
+      try {
+        const { tuitionId, salary, coverLetter } = req.body;
+        const tutor = req.tutor;
+        if (!tuitionId || !salary) {
+          return res.status(400).send({ message: "Missing required fields" });
+        }
+        const tuition = await tuitionsCollection.findOne({
+          _id: new ObjectId(tuitionId),
+        });
+        if (!tuition) {
+          return res.status(404).send({ message: "Tuition not found" });
+        }
+        if (tuition.status !== "open") {
+          return res
+            .status(400)
+            .send({ message: "Tuition is not open for application" });
+        }
+        if (tuition.userId === tutor._id.toString()) {
+          return res
+            .status(403)
+            .send({ message: "You cannot apply to your own tuition" });
+        }
+        if (tuition.district !== tutor.district) {
+          return res.status(403).send({
+            message: `You can only apply to tuitions within your district (${tutor.district}).`,
+          });
+        }
+        if (salary < tuition.minBudget || salary > tuition.maxBudget) {
+          return res.status(400).send({
+            message: `Salary must be between ${tuition.minBudget} and ${tuition.maxBudget}`,
+          });
+        }
+        const alreadyApplied = await applicationsCollection.findOne({
+          tuitionId: tuition._id,
+          tutorId: tutor._id,
+        });
+        if (alreadyApplied) {
+          return res
+            .status(409)
+            .send({ message: "You have already applied for this tuition" });
+        }
+        const application = {
+          tuitionId: tuition._id,
+          tutorId: tutor._id,
+          studentId: tuition.userId,
+          location: tuition.location,
+          salary,
+          coverLetter: coverLetter || "",
+          tutorName: tutor.name,
+          tutorPhoto: tutor.photoURL,
+          qualification: tutor.qualification,
+          institution: tutor.institution,
+          experienceYears: tutor.experienceYears,
+          experienceMonths: tutor.experienceMonths,
+          status: "pending",
+          tuitionTime: tuition.time,
+          days: tuition.days,
+          classLevel: tuition.classLevel,
+          subjects: tuition.subjects,
+          appliedAt: new Date(),
+        };
+        const result = await applicationsCollection.insertOne(application);
+        res.status(201).send({
+          message: "Application submitted successfully",
+          applicationId: result.insertedId,
+        });
+      } catch (err) {
+        console.log("apply tuition error", err);
+        res.status(500).send({ message: "Failed to apply for tuition" });
       }
     });
 
