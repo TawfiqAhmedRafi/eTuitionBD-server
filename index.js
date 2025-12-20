@@ -1012,59 +1012,77 @@ async function run() {
 
     // Applications API
     // my applications
-    app.get(
-      "/applications/my-applications",
-      verifyFBToken,
-      async (req, res) => {
-        try {
-          const email = req.decoded_email;
-          const user = await usersCollection.findOne(
-            { email },
-            { projection: { role: 1, _id: 1 } }
-          );
-          if (!user) {
-            return res.status(404).send({ message: "User Not found" });
-          }
-          const tutor = await tutorsCollection.findOne(
-            { email },
-            { projection: { _id: 1 } }
-          );
-          let filter = {};
-          if (user.role === "tutor") {
-            filter = { tutorId: tutor._id };
-          } else if (user.role === "student") {
-            filter = { studentId: user._id };
-          }
-          const applications = await applicationsCollection
-            .find(filter, {
-              projection: {
-                tutorName: 1,
-                tutorPhoto: 1,
-                qualification: 1,
-                institution: 1,
-                experienceYears: 1,
-                experienceMonths: 1,
-                salary: 1,
-                coverLetter: 1,
-                location: 1,
-                status: 1,
-                tuitionTime: 1,
-                days: 1,
-                classLevel: 1,
-                subjects: 1,
-                appliedAt: 1,
-                tutorId: 1,
-              },
-            })
-            .sort({ appliedAt: -1 })
-            .toArray();
-          res.send({ applications });
-        } catch (err) {
-          console.error("Fetch my applications error:", err);
-          res.status(500).send({ message: "Failed to fetch applications" });
-        }
-      }
+    app.get("/applications/my-applications", verifyFBToken, async (req, res) => {
+  try {
+    const email = req.decoded_email;
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50); 
+    const skip = (page - 1) * limit;
+
+    const user = await usersCollection.findOne(
+      { email },
+      { projection: { role: 1, _id: 1 } }
     );
+
+    if (!user) {
+      return res.status(404).send({ message: "User Not found" });
+    }
+
+    const tutor = await tutorsCollection.findOne(
+      { email },
+      { projection: { _id: 1 } }
+    );
+
+    let filter = {};
+    if (user.role === "tutor") {
+      filter = { tutorId: tutor._id };
+    } else if (user.role === "student") {
+      filter = { studentId: user._id };
+    }
+
+    const total = await applicationsCollection.countDocuments(filter);
+
+    const applications = await applicationsCollection
+      .find(filter, {
+        projection: {
+          tutorName: 1,
+          tutorPhoto: 1,
+          qualification: 1,
+          institution: 1,
+          experienceYears: 1,
+          experienceMonths: 1,
+          salary: 1,
+          coverLetter: 1,
+          location: 1,
+          status: 1,
+          tuitionTime: 1,
+          days: 1,
+          classLevel: 1,
+          subjects: 1,
+          appliedAt: 1,
+          tutorId: 1,
+        },
+      })
+      .sort({ appliedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    res.send({
+      applications,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (err) {
+    console.error("Fetch my applications error:", err);
+    res.status(500).send({ message: "Failed to fetch applications" });
+  }
+});
+
     // getting application for a particular tuition
     app.get(
       "/applications/has-applied/:tuitionId",
