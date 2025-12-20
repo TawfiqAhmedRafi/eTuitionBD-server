@@ -693,6 +693,7 @@ async function run() {
           mode: 1,
           status: 1,
           postedAt: 1,
+          reviewed:1
         };
 
         const [tuitions, total] = await Promise.all([
@@ -718,7 +719,47 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch my tuitions" });
       }
     });
+    // individual tuitions
+    app.get("/tuitions/:id", verifyFBToken, async (req, res) => {
+      const { id } = req.params;
 
+      try {
+        const tuition = await tuitionsCollection.findOne(
+          {
+            _id: new ObjectId(id),
+          },
+          {
+            projection: {
+              name: 1,
+              email: 1,
+              phone: 1,
+              photoURL: 1,
+              status: 1,
+              classLevel: 1,
+              subjects: 1,
+              minBudget: 1,
+              maxBudget: 1,
+              location: 1,
+              district: 1,
+              mode: 1,
+              days: 1,
+              time: 1,
+              duration: 1,
+              postedAt: 1,
+              description: 1,
+            },
+          }
+        );
+
+        if (!tuition) {
+          return res.status(404).json({ message: "Tuition not found" });
+        }
+
+        res.json(tuition);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch tuition" });
+      }
+    });
     //tutor completing tuition
     app.patch(
       "/tuitions/tutor/:id",
@@ -877,47 +918,6 @@ async function run() {
       }
     });
 
-    // individual tuitions
-    app.get("/tuitions/:id", verifyFBToken, async (req, res) => {
-      const { id } = req.params;
-
-      try {
-        const tuition = await tuitionsCollection.findOne(
-          {
-            _id: new ObjectId(id),
-          },
-          {
-            projection: {
-              name: 1,
-              email: 1,
-              phone: 1,
-              photoURL: 1,
-              status: 1,
-              classLevel: 1,
-              subjects: 1,
-              minBudget: 1,
-              maxBudget: 1,
-              location: 1,
-              district: 1,
-              mode: 1,
-              days: 1,
-              time: 1,
-              duration: 1,
-              postedAt: 1,
-              description: 1,
-            },
-          }
-        );
-
-        if (!tuition) {
-          return res.status(404).json({ message: "Tuition not found" });
-        }
-
-        res.json(tuition);
-      } catch (error) {
-        res.status(500).json({ message: "Failed to fetch tuition" });
-      }
-    });
     // post tuitions
     app.post("/tuitions", verifyFBToken, async (req, res) => {
       try {
@@ -1593,6 +1593,9 @@ async function run() {
         if (alreadyReviewed) {
           return res.status(409).send({ message: "Review already submitted" });
         }
+        if (tuition.reviewed === true) {
+          return res.status(409).send({ message: "Review already submitted" });
+        }
         const reviewDoc = {
           tuitionId: tuition._id,
           studentId: tuition.userId,
@@ -1614,7 +1617,16 @@ async function run() {
             },
           }
         );
-
+        await tuitionsCollection.updateOne(
+          { _id: tuition._id },
+          {
+            $set: {
+              reviewed: true,
+              reviewedAt: new Date(),
+              reviewId: result.insertedId,
+            },
+          }
+        );
         res.status(201).send({
           message: "Review submitted successfully",
           reviewId: result.insertedId,
