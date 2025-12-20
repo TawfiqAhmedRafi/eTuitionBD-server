@@ -1541,6 +1541,90 @@ async function run() {
       }
     });
 
+    // reviews API
+    app.post("/reviews", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const { tuitionId, rating, review } = req.body;
+
+        if (!tuitionId || !rating) {
+          return res.status(400).send({ message: "Missing required fields" });
+        }
+
+        if (rating < 1 || rating > 5) {
+          return res
+            .status(400)
+            .send({ message: "Rating must be between 1 to 5" });
+        }
+        const student = await usersCollection.findOne(
+          { email },
+          { projection: { _id: 1, role: 1 } }
+        );
+
+        if (!student || student.role !== "student") {
+          return res
+            .status(403)
+            .send({ message: "Only students can post reviews" });
+        }
+        const tuition = await tuitionsCollection.findOne({
+          _id: new ObjectId(tuitionId),
+        });
+
+        if (!tuition) {
+          return res.status(404).send({ message: "Tuition not found" });
+        }
+        if (tuition.userId.toString() !== student._id.toString()) {
+          return res.status(403).send({ message: "Unauthorized access" });
+        }
+        if (tuition.status !== "completed") {
+          return res
+            .status(400)
+            .send({ message: "Tuition must be completed to review" });
+        }
+        if (!tuition.tutorId) {
+          return res
+            .status(400)
+            .send({ message: "No tutor assigned to this tuition" });
+        }
+        const alreadyReviewed = await reviewsCollection.findOne({
+          tuitionId: tuition._id,
+        });
+
+        if (alreadyReviewed) {
+          return res.status(409).send({ message: "Review already submitted" });
+        }
+        const reviewDoc = {
+          tuitionId: tuition._id,
+          studentId: tuition.userId,
+          tutorId: tuition.tutorId,
+
+          rating: Number(rating),
+          review: review?.trim() || "",
+
+          postedAt: new Date(),
+        };
+
+        const result = await reviewsCollection.insertOne(reviewDoc);
+        await tutorsCollection.updateOne(
+          { _id: tuition.tutorId },
+          {
+            $inc: {
+              ratingCount: 1,
+              ratingSum: Number(rating),
+            },
+          }
+        );
+
+        res.status(201).send({
+          message: "Review submitted successfully",
+          reviewId: result.insertedId,
+        });
+      } catch (err) {
+        console.error("Post review error:", err);
+        res.status(500).send({ message: "Failed to submit review" });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
