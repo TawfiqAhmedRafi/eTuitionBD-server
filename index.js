@@ -693,7 +693,7 @@ async function run() {
           mode: 1,
           status: 1,
           postedAt: 1,
-          reviewed:1
+          reviewed: 1,
         };
 
         const [tuitions, total] = await Promise.all([
@@ -1542,6 +1542,81 @@ async function run() {
     });
 
     // reviews API
+    // latest reviews
+    app.get("/latest-reviews", async (req, res) => {
+      try {
+        const projection = {
+          _id: 1,
+          studentName: 1,
+          studentPhoto: 1,
+          tutorName: 1,
+          tutorPhoto: 1,
+          review: 1,
+          rating: 1,
+          postedAt: 1,
+        };
+
+        const latestReviews = await reviewsCollection
+          .find({}, { projection })
+          .sort({ postedAt: -1 })
+          .limit(6)
+          .toArray();
+
+        res.send({ reviews: latestReviews });
+      } catch (err) {
+        console.error("Fetch latest reviews error:", err);
+        res.status(500).send({ message: "Failed to fetch latest reviews" });
+      }
+    });
+    // getting reviews for tutors
+    app.get("/tutor-reviews", verifyFBToken, verifyTutor, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        let { page = 1, limit = 10 } = req.query;
+        const pageNumber = parseInt(page);
+        const limitNumber = Math.min(parseInt(limit), 10);
+        const skip = (pageNumber - 1) * limitNumber;
+        const tutor = await tutorsCollection.findOne({ email });
+        if (!tutor) {
+          return res.status(400).send({ message: "Tutor not found" });
+        }
+        const tutorId = tutor._id;
+        const projection = {
+          _id: 1,
+          tuitionId: 1,
+          rating: 1,
+          tutorId: 1,
+          studentId: 1,
+          review: 1,
+          postedAt: 1,
+          studentName: 1,
+          studentPhoto: 1,
+          subjects: 1,
+        };
+        const [reviews, total] = await Promise.all([
+          reviewsCollection
+            .find({ tutorId }, { projection })
+            .sort({ postedAt: -1 })
+            .skip(skip)
+            .limit(limitNumber)
+            .toArray(),
+
+          reviewsCollection.countDocuments({ tutorId }),
+        ]);
+        res.send({
+          reviews,
+          page: pageNumber,
+          limit: limitNumber,
+          total,
+          totalPages: Math.ceil(total / limitNumber),
+        });
+      } catch (err) {
+        console.error("Tutor tuitions fetch error:", err);
+        res.status(500).send({ message: "Failed to fetch tutor tuitions" });
+      }
+    });
+
+    // posting
     app.post("/reviews", verifyFBToken, async (req, res) => {
       try {
         const email = req.decoded_email;
@@ -1558,7 +1633,7 @@ async function run() {
         }
         const student = await usersCollection.findOne(
           { email },
-          { projection: { _id: 1, role: 1 } }
+          { projection: { _id: 1, role: 1, photoURL: 1, name: 1 } }
         );
 
         if (!student || student.role !== "student") {
@@ -1586,13 +1661,7 @@ async function run() {
             .status(400)
             .send({ message: "No tutor assigned to this tuition" });
         }
-        const alreadyReviewed = await reviewsCollection.findOne({
-          tuitionId: tuition._id,
-        });
 
-        if (alreadyReviewed) {
-          return res.status(409).send({ message: "Review already submitted" });
-        }
         if (tuition.reviewed === true) {
           return res.status(409).send({ message: "Review already submitted" });
         }
@@ -1600,11 +1669,14 @@ async function run() {
           tuitionId: tuition._id,
           studentId: tuition.userId,
           tutorId: tuition.tutorId,
-
+          studentName: student.name,
+          studentPhoto: student.photoURL,
           rating: Number(rating),
           review: review?.trim() || "",
-
+          tutorPhoto: tuition.tutorPhoto,
+          tutorName: tuition.tutorName,
           postedAt: new Date(),
+          subjects: tuition.subjects,
         };
 
         const result = await reviewsCollection.insertOne(reviewDoc);
