@@ -7,8 +7,12 @@ const port = process.env.PORT || 3000;
 const bcrypt = require("bcrypt");
 const admin = require("firebase-admin");
 
-const serviceAccount = require("./etuition-firebase-adminsdk.json");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -2018,10 +2022,10 @@ async function run() {
       }
     });
 
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
   }
 }
