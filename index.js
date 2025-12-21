@@ -63,6 +63,10 @@ async function run() {
       { unique: true }
     );
     await usersCollection.createIndex({ email: 1 }, { unique: true });
+    await tutorsCollection.createIndex({ email: 1 }, { unique: true });
+    await tutorsCollection.createIndex({ status: 1 });
+    await tutorsCollection.createIndex({ submittedAt: -1 });
+
     await tuitionsCollection.createIndex({ email: 1, status: 1 });
     await tuitionsCollection.createIndex({ email: 1 });
 
@@ -75,10 +79,23 @@ async function run() {
       { tuitionId: 1, tutorId: 1 },
       { unique: true }
     );
+    await paymentsCollection.createIndex(
+      { transactionId: 1 },
+      { unique: true }
+    );
+
     await paymentsCollection.createIndex({ studentEmail: 1, paidAt: -1 });
     await paymentsCollection.createIndex({ tutorEmail: 1, paidAt: -1 });
     await paymentsCollection.createIndex({ paidAt: -1 });
     await applicationsCollection.createIndex({ studentEmail: 1, status: 1 });
+    await applicationsCollection.createIndex(
+      { tuitionId: 1, tutorId: 1 },
+      { unique: true }
+    );
+    await applicationsCollection.createIndex({ tutorId: 1, status: 1 });
+    await applicationsCollection.createIndex({ appliedAt: -1 });
+    await reviewsCollection.createIndex({ tutorId: 1, postedAt: -1 });
+    await reviewsCollection.createIndex({ rating: 1 });
 
     // middlewares
     const verifyAdmin = async (req, res, next) => {
@@ -192,97 +209,196 @@ async function run() {
       }
     });
     // tutor
-    app.get("/dashboard/tutor", verifyFBToken, async (req, res) => {
-      try {
-        const email = req.decoded_email;
-        const tutor = await tutorsCollection.findOne({ email });
-        if (!tutor)
-          return res.status(404).send({ message: "Tutor profile not found" });
+    app.get(
+      "/dashboard/tutor",
+      verifyFBToken,
+      verifyTutor,
+      async (req, res) => {
+        try {
+          const email = req.decoded_email;
+          const tutor = await tutorsCollection.findOne({ email });
+          if (!tutor)
+            return res.status(404).send({ message: "Tutor profile not found" });
 
-        const tutorId = tutor._id;
+          const tutorId = tutor._id;
 
-        const tuitionsSummaryPipeline = [
-          { $match: { tutorId } },
-          { $group: { _id: "$status", count: { $sum: 1 } } },
-        ];
+          const tuitionsSummaryPipeline = [
+            { $match: { tutorId } },
+            { $group: { _id: "$status", count: { $sum: 1 } } },
+          ];
 
-        const paymentsPipeline = [
-          { $match: { tutorId } },
-          {
-            $group: {
-              _id: null,
-              totalIncome: { $sum: "$salary" },
-              totalPayments: { $sum: 1 },
+          const paymentsPipeline = [
+            { $match: { tutorId } },
+            {
+              $group: {
+                _id: null,
+                totalIncome: { $sum: "$salary" },
+                totalPayments: { $sum: 1 },
+              },
             },
-          },
-        ];
+          ];
 
-        const applicationsPipeline = [
-          { $match: { tutorId } },
-          { $group: { _id: "$status", count: { $sum: 1 } } },
-        ];
+          const applicationsPipeline = [
+            { $match: { tutorId } },
+            { $group: { _id: "$status", count: { $sum: 1 } } },
+          ];
 
-        const reviewsPipeline = [
-          { $match: { tutorId } },
-          { $group: { _id: "$rating", count: { $sum: 1 } } },
-          { $sort: { _id: -1 } },
-        ];
+          const reviewsPipeline = [
+            { $match: { tutorId } },
+            { $group: { _id: "$rating", count: { $sum: 1 } } },
+            { $sort: { _id: -1 } },
+          ];
 
-        const [
-          tuitionsSummary,
-          paymentsSummary,
-          applicationsSummary,
-          reviewsSummary,
-        ] = await Promise.all([
-          tuitionsCollection.aggregate(tuitionsSummaryPipeline).toArray(),
-          paymentsCollection.aggregate(paymentsPipeline).toArray(),
-          applicationsCollection.aggregate(applicationsPipeline).toArray(),
-          reviewsCollection.aggregate(reviewsPipeline).toArray(),
-        ]);
+          const [
+            tuitionsSummary,
+            paymentsSummary,
+            applicationsSummary,
+            reviewsSummary,
+          ] = await Promise.all([
+            tuitionsCollection.aggregate(tuitionsSummaryPipeline).toArray(),
+            paymentsCollection.aggregate(paymentsPipeline).toArray(),
+            applicationsCollection.aggregate(applicationsPipeline).toArray(),
+            reviewsCollection.aggregate(reviewsPipeline).toArray(),
+          ]);
 
-        const totalTuitions = tuitionsSummary.reduce(
-          (acc, t) => acc + t.count,
-          0
-        );
-        const ongoingTuitions =
-          tuitionsSummary.find((t) => t._id === "ongoing")?.count || 0;
-        const totalApplications = applicationsSummary.reduce(
-          (acc, a) => acc + a.count,
-          0
-        );
-        const acceptedApplications =
-          applicationsSummary.find((a) => a._id === "accepted")?.count || 0;
-        const totalIncome = paymentsSummary[0]?.totalIncome || 0;
-        const averageRating =
-          tutor.ratingCount > 0 ? tutor.ratingSum / tutor.ratingCount : 0;
+          const totalTuitions = tuitionsSummary.reduce(
+            (acc, t) => acc + t.count,
+            0
+          );
+          const ongoingTuitions =
+            tuitionsSummary.find((t) => t._id === "ongoing")?.count || 0;
+          const totalApplications = applicationsSummary.reduce(
+            (acc, a) => acc + a.count,
+            0
+          );
+          const acceptedApplications =
+            applicationsSummary.find((a) => a._id === "accepted")?.count || 0;
+          const totalIncome = paymentsSummary[0]?.totalIncome || 0;
+          const averageRating =
+            tutor.ratingCount > 0 ? tutor.ratingSum / tutor.ratingCount : 0;
 
-        const cards = {
-          totalTuitions,
-          ongoingTuitions,
-          totalApplications,
-          acceptedApplications,
-          totalIncome,
-           averageRating: parseFloat(averageRating.toFixed(1))
-        };
+          const cards = {
+            totalTuitions,
+            ongoingTuitions,
+            totalApplications,
+            acceptedApplications,
+            totalIncome,
+            averageRating: parseFloat(averageRating.toFixed(1)),
+          };
 
-        res.send({
-          role: "tutor",
-          cards,
-          tuitionsSummary,
-          applicationsSummary,
-          paymentsSummary: paymentsSummary[0] || {
-            totalIncome: 0,
-            totalPayments: 0,
-          },
-          reviewsSummary,
-        });
-      } catch (err) {
-        console.error("Tutor dashboard error:", err);
-        res
-          .status(500)
-          .send({ message: "Failed to fetch tutor dashboard data" });
+          res.send({
+            role: "tutor",
+            cards,
+            tuitionsSummary,
+            applicationsSummary,
+            paymentsSummary: paymentsSummary[0] || {
+              totalIncome: 0,
+              totalPayments: 0,
+            },
+            reviewsSummary,
+          });
+        } catch (err) {
+          console.error("Tutor dashboard error:", err);
+          res
+            .status(500)
+            .send({ message: "Failed to fetch tutor dashboard data" });
+        }
       }
-    });
+    );
+    // admin
+    app.get(
+      "/dashboard/admin",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const totalTuitionsPromise = tuitionsCollection.countDocuments();
+          const totalTutorsPromise = tutorsCollection.countDocuments();
+          const totalStudentsPromise = usersCollection.countDocuments({
+            role: "student",
+          });
+
+          const totalRevenuePromise = paymentsCollection
+            .aggregate([
+              {
+                $group: {
+                  _id: null,
+                  totalRevenue: { $sum: { $subtract: ["$amount", "$salary"] } },
+                },
+              },
+            ])
+            .toArray();
+
+          const tuitionsStatusPromise = tuitionsCollection
+            .aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }])
+            .toArray();
+
+          const [
+            totalTuitions,
+            totalTutors,
+            totalStudents,
+            totalRevenueAgg,
+            tuitionsStatus,
+          ] = await Promise.all([
+            totalTuitionsPromise,
+            totalTutorsPromise,
+            totalStudentsPromise,
+            totalRevenuePromise,
+            tuitionsStatusPromise,
+          ]);
+
+          const totalRevenue = totalRevenueAgg[0]?.totalRevenue || 0;
+          const ongoingTuitions =
+            tuitionsStatus.find((t) => t._id === "ongoing")?.count || 0;
+          const pendingTuitions =
+            tuitionsStatus.find((t) => t._id === "open")?.count || 0;
+
+          const pieChart = tuitionsStatus;
+
+          const today = new Date();
+          const sixMonthsAgo = new Date(
+            today.getFullYear(),
+            today.getMonth() - 5,
+            1
+          );
+
+          const barChart = await paymentsCollection
+            .aggregate([
+              { $match: { paidAt: { $gte: sixMonthsAgo } } },
+              {
+                $group: {
+                  _id: {
+                    year: { $year: "$paidAt" },
+                    month: { $month: "$paidAt" },
+                  },
+                  revenue: { $sum: { $subtract: ["$amount", "$salary"] } },
+                },
+              },
+              { $sort: { "_id.year": 1, "_id.month": 1 } },
+            ])
+            .toArray();
+
+          res.send({
+            role: "admin",
+            cards: {
+              totalTuitions,
+              totalTutors,
+              totalStudents,
+              totalRevenue,
+              ongoingTuitions,
+              pendingTuitions,
+            },
+            pieChart,
+            barChart,
+          });
+        } catch (err) {
+          console.error("Admin dashboard error:", err);
+          res
+            .status(500)
+            .send({ message: "Failed to fetch admin dashboard data" });
+        }
+      }
+    );
 
     //  users API
 
@@ -341,22 +457,44 @@ async function run() {
       }
     });
     // patch user
-    app.patch("/users/:id", verifyFBToken, async (req, res) => {
+    app.patch("/users/:email", verifyFBToken, async (req, res) => {
       try {
-        const { id } = req.params;
-        const updateData = req.body;
+        const { email } = req.params;
+
+        if (email !== req.decoded_email) {
+          return res.status(403).send({ message: "Forbidden Access" });
+        }
+
+        const allowedFields = ["name", "phone", "photoURL"];
+        const updateDataFiltered = {};
+
+        for (const key of allowedFields) {
+          if (req.body[key] !== undefined) {
+            updateDataFiltered[key] = req.body[key];
+          }
+        }
+
+        if (Object.keys(updateDataFiltered).length === 0) {
+          return res.status(400).send({ message: "No valid fields to update" });
+        }
 
         const result = await usersCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updateData }
+          { email },
+          { $set: updateDataFiltered }
         );
 
-        res.send(result);
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        const updatedUser = await usersCollection.findOne({ email });
+        res.send(updatedUser);
       } catch (error) {
         console.error("Patch user error:", error);
         res.status(500).send({ message: "Failed to update user" });
       }
     });
+
     // admin only patch
     app.patch(
       "/users/:id/role",
