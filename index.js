@@ -62,6 +62,10 @@ async function run() {
       { idempotencyKey: 1 },
       { unique: true }
     );
+    await usersCollection.createIndex({ email: 1 }, { unique: true });
+    await tuitionsCollection.createIndex({ email: 1, status: 1 });
+    await tuitionsCollection.createIndex({ email: 1 });
+
     await tuitionsCollection.createIndex({ postedAt: -1 });
     await tuitionsCollection.createIndex({ subjects: 1 });
     await tuitionsCollection.createIndex({ district: 1 });
@@ -74,6 +78,7 @@ async function run() {
     await paymentsCollection.createIndex({ studentEmail: 1, paidAt: -1 });
     await paymentsCollection.createIndex({ tutorEmail: 1, paidAt: -1 });
     await paymentsCollection.createIndex({ paidAt: -1 });
+    await applicationsCollection.createIndex({ studentEmail: 1, status: 1 });
 
     // middlewares
     const verifyAdmin = async (req, res, next) => {
@@ -114,6 +119,79 @@ async function run() {
       }
     };
 
+    // dashboard
+    // student
+    app.get("/dashboard/student", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const user = await usersCollection.findOne({ email });
+        if (!user) return res.status(404).send({ message: "User not found" });
+
+        let dashboardData = {};
+
+        const tuitionsPipeline = [
+          { $match: { email } },
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ];
+
+        const paymentsPipeline = [
+          { $match: { studentEmail: email } },
+          {
+            $group: {
+              _id: null,
+              totalSpent: { $sum: "$amount" },
+              totalPayments: { $sum: 1 },
+            },
+          },
+        ];
+
+        const applicationsPipeline = [
+          { $match: { studentId: user._id } },
+          {
+            $group: {
+              _id: "$status",
+              count: { $sum: 1 },
+            },
+          },
+        ];
+
+        const subjectsPipeline = [
+          { $match: { email: email } },
+          { $unwind: "$subjects" },
+          { $group: { _id: "$subjects", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ];
+
+        const [
+          tuitionsSummary,
+          paymentsSummary,
+          applicationsSummary,
+          subjectsSummary,
+        ] = await Promise.all([
+          tuitionsCollection.aggregate(tuitionsPipeline).toArray(),
+          paymentsCollection.aggregate(paymentsPipeline).toArray(),
+          applicationsCollection.aggregate(applicationsPipeline).toArray(),
+          tuitionsCollection.aggregate(subjectsPipeline).toArray(),
+        ]);
+
+        dashboardData = {
+          role: "student",
+          tuitionsSummary,
+          paymentsSummary: paymentsSummary[0] || {
+            totalSpent: 0,
+            totalPayments: 0,
+          },
+          applicationsSummary,
+          subjectsSummary,
+        };
+
+        res.send(dashboardData);
+      } catch (err) {
+        console.error("Dashboard fetch error:", err);
+        res.status(500).send({ message: "Failed to fetch dashboard data" });
+      }
+    });
+
     //  users API
 
     // Get all users
@@ -152,6 +230,7 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch users" });
       }
     });
+
     // Get the role of the logged-in user
     app.get("/user-role", verifyFBToken, async (req, res) => {
       try {
