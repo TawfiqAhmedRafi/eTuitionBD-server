@@ -191,6 +191,98 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch dashboard data" });
       }
     });
+    // tutor
+    app.get("/dashboard/tutor", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const tutor = await tutorsCollection.findOne({ email });
+        if (!tutor)
+          return res.status(404).send({ message: "Tutor profile not found" });
+
+        const tutorId = tutor._id;
+
+        const tuitionsSummaryPipeline = [
+          { $match: { tutorId } },
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ];
+
+        const paymentsPipeline = [
+          { $match: { tutorId } },
+          {
+            $group: {
+              _id: null,
+              totalIncome: { $sum: "$salary" },
+              totalPayments: { $sum: 1 },
+            },
+          },
+        ];
+
+        const applicationsPipeline = [
+          { $match: { tutorId } },
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ];
+
+        const reviewsPipeline = [
+          { $match: { tutorId } },
+          { $group: { _id: "$rating", count: { $sum: 1 } } },
+          { $sort: { _id: -1 } },
+        ];
+
+        const [
+          tuitionsSummary,
+          paymentsSummary,
+          applicationsSummary,
+          reviewsSummary,
+        ] = await Promise.all([
+          tuitionsCollection.aggregate(tuitionsSummaryPipeline).toArray(),
+          paymentsCollection.aggregate(paymentsPipeline).toArray(),
+          applicationsCollection.aggregate(applicationsPipeline).toArray(),
+          reviewsCollection.aggregate(reviewsPipeline).toArray(),
+        ]);
+
+        const totalTuitions = tuitionsSummary.reduce(
+          (acc, t) => acc + t.count,
+          0
+        );
+        const ongoingTuitions =
+          tuitionsSummary.find((t) => t._id === "ongoing")?.count || 0;
+        const totalApplications = applicationsSummary.reduce(
+          (acc, a) => acc + a.count,
+          0
+        );
+        const acceptedApplications =
+          applicationsSummary.find((a) => a._id === "accepted")?.count || 0;
+        const totalIncome = paymentsSummary[0]?.totalIncome || 0;
+        const averageRating =
+          tutor.ratingCount > 0 ? tutor.ratingSum / tutor.ratingCount : 0;
+
+        const cards = {
+          totalTuitions,
+          ongoingTuitions,
+          totalApplications,
+          acceptedApplications,
+          totalIncome,
+           averageRating: parseFloat(averageRating.toFixed(1))
+        };
+
+        res.send({
+          role: "tutor",
+          cards,
+          tuitionsSummary,
+          applicationsSummary,
+          paymentsSummary: paymentsSummary[0] || {
+            totalIncome: 0,
+            totalPayments: 0,
+          },
+          reviewsSummary,
+        });
+      } catch (err) {
+        console.error("Tutor dashboard error:", err);
+        res
+          .status(500)
+          .send({ message: "Failed to fetch tutor dashboard data" });
+      }
+    });
 
     //  users API
 
@@ -1603,7 +1695,7 @@ async function run() {
           tutorEmail: tuition.tutorEmail,
           paymentStatus: session.payment_status,
         };
-        await paymentsCollection.insertOne(paymentInfo);
+
         await paymentsCollection.updateOne(
           { transactionId },
           { $setOnInsert: paymentInfo },
