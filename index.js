@@ -1,14 +1,14 @@
-require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const app = express();
+require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 3000;
 const bcrypt = require("bcrypt");
 const admin = require("firebase-admin");
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
-
+//const serviceAccount = require("./etuition-firebase-adminsdk.json");
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf8"
 );
@@ -52,7 +52,9 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
+
     await client.connect();
+    
     const db = client.db("e_tuitionBD_db");
     const usersCollection = db.collection("users");
     const tutorsCollection = db.collection("tutors");
@@ -60,46 +62,6 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const applicationsCollection = db.collection("applications");
     const reviewsCollection = db.collection("reviews");
-
-    // indexing
-    await tuitionsCollection.createIndex(
-      { idempotencyKey: 1 },
-      { unique: true }
-    );
-    await usersCollection.createIndex({ email: 1 }, { unique: true });
-    await tutorsCollection.createIndex({ email: 1 }, { unique: true });
-    await tutorsCollection.createIndex({ status: 1 });
-    await tutorsCollection.createIndex({ submittedAt: -1 });
-
-    await tuitionsCollection.createIndex({ email: 1, status: 1 });
-    await tuitionsCollection.createIndex({ email: 1 });
-
-    await tuitionsCollection.createIndex({ postedAt: -1 });
-    await tuitionsCollection.createIndex({ subjects: 1 });
-    await tuitionsCollection.createIndex({ district: 1 });
-    await tuitionsCollection.createIndex({ minBudget: 1 });
-    await tuitionsCollection.createIndex({ maxBudget: 1 });
-    await applicationsCollection.createIndex(
-      { tuitionId: 1, tutorId: 1 },
-      { unique: true }
-    );
-    await paymentsCollection.createIndex(
-      { transactionId: 1 },
-      { unique: true }
-    );
-
-    await paymentsCollection.createIndex({ studentEmail: 1, paidAt: -1 });
-    await paymentsCollection.createIndex({ tutorEmail: 1, paidAt: -1 });
-    await paymentsCollection.createIndex({ paidAt: -1 });
-    await applicationsCollection.createIndex({ studentEmail: 1, status: 1 });
-    await applicationsCollection.createIndex(
-      { tuitionId: 1, tutorId: 1 },
-      { unique: true }
-    );
-    await applicationsCollection.createIndex({ tutorId: 1, status: 1 });
-    await applicationsCollection.createIndex({ appliedAt: -1 });
-    await reviewsCollection.createIndex({ tutorId: 1, postedAt: -1 });
-    await reviewsCollection.createIndex({ rating: 1 });
 
     // middlewares
     const verifyAdmin = async (req, res, next) => {
@@ -2035,6 +1997,7 @@ app.get("/", (req, res) => {
   res.send("ETuitionBD Backend Service is running!");
 });
 
-app.listen(port, () => {
-  console.log(`meow ${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`meow ${port}`);
+// });
+module.exports = app;
