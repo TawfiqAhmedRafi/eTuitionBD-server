@@ -6,6 +6,8 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 3000;
 const bcrypt = require("bcrypt");
 const admin = require("firebase-admin");
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 //const serviceAccount = require("./etuition-firebase-adminsdk.json");
@@ -52,9 +54,8 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-
     await client.connect();
-    
+
     const db = client.db("e_tuitionBD_db");
     const usersCollection = db.collection("users");
     const tutorsCollection = db.collection("tutors");
@@ -101,6 +102,133 @@ async function run() {
         res.status(500).send({ message: "Tutor verification failed" });
       }
     };
+
+
+
+    // auth related API
+    // forgot pass
+    app.post("/auth/forgot-password", async (req, res) => {
+      const { email } = req.body;
+      const user = await usersCollection.findOne({ email });
+
+      if (!user) {
+        return res.status(404).send({ message: "User not found" });
+      }
+
+      if (user.otpExpiry && Date.now() < user.otpExpiry - 4 * 60 * 1000) {
+        return res
+          .status(429)
+          .send({ message: "Please wait before requesting again" });
+      }
+
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const hashedOtp = await bcrypt.hash(otp, 10);
+
+      await usersCollection.updateOne(
+        { email },
+        {
+          $set: {
+            resetOtp: hashedOtp,
+            otpExpiry: Date.now() + 5 * 60 * 1000,
+            otpVerified: false,
+          },
+        }
+      );
+
+      const transporter = nodemailer.createTransport({
+        service: "Gmail",
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+      });
+
+      await transporter.sendMail({
+        from: `" eTuitionBD" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: "Password Reset OTP",
+        html: `
+      <h2>eTuitionBD – Rest Password Verification Code</h2>
+      <p>Dear User,</p>
+
+      <p>To continue with your request on <strong>eTuitionBD</strong>, please use the verification code below:</p>
+
+      <p style="font-size: 22px; font-weight: 600; letter-spacing: 2px;">
+        ${otp}
+      </p>
+
+      <p>This code will expire in <strong>5 minutes</strong>. For security reasons, please do not share this code with anyone.</p>
+
+      <p>If you did not request this verification, you can safely ignore this email.</p>
+
+      <p>Regards,<br/>
+      <strong>eTuitionBD Team</strong></p>
+
+    `,
+      });
+
+      res.send({ message: "OTP sent successfully" });
+    });
+    // verify otp
+    app.post("/auth/verify-otp", async (req, res) => {
+      const { email, otp } = req.body;
+      const user = await usersCollection.findOne({ email });
+
+      if (!user || !user.resetOtp)
+        return res.status(400).send({ message: "Invalid request" });
+
+      if (Date.now() > user.otpExpiry)
+        return res.status(400).send({ message: "OTP expired" });
+
+      const isValid = await bcrypt.compare(otp, user.resetOtp);
+      if (!isValid) return res.status(400).send({ message: "Incorrect OTP" });
+
+      const resetToken = crypto.randomBytes(32).toString("hex");
+
+      await usersCollection.updateOne(
+        { email },
+        {
+          $set: {
+            otpVerified: true,
+            resetToken,
+            resetTokenExpiry: Date.now() + 10 * 60 * 1000,
+          },
+        }
+      );
+
+      res.send({ message: "OTP verified", resetToken });
+    });
+    // reset pass
+    app.post("/auth/reset-password", async (req, res) => {
+      const { email, resetToken, newPassword } = req.body;
+      const user = await usersCollection.findOne({ email });
+
+      if (
+        !user ||
+        user.resetToken !== resetToken ||
+        Date.now() > user.resetTokenExpiry
+      ) {
+        return res.status(400).send({ message: "Invalid or expired token" });
+      }
+
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+      await usersCollection.updateOne(
+        { email },
+        {
+          $set: { password: hashedPassword },
+          $unset: {
+            resetOtp: "",
+            otpExpiry: "",
+            otpVerified: "",
+            resetToken: "",
+            resetTokenExpiry: "",
+          },
+        }
+      );
+
+      res.send({ message: "Password reset successful" });
+    });
 
     // dashboard
     // student
@@ -1984,10 +2112,10 @@ async function run() {
       }
     });
 
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!"
-    // );
+    await client.db("admin").command({ ping: 1 });
+    console.log(
+      "Pinged your deployment. You successfully connected to MongoDB!"
+    );
   } finally {
   }
 }
@@ -1997,7 +2125,7 @@ app.get("/", (req, res) => {
   res.send("ETuitionBD Backend Service is running!");
 });
 
-// app.listen(port, () => {
-//   console.log(`meow ${port}`);
-// });
+app.listen(port, () => {
+  console.log(`meow ${port}`);
+});
 module.exports = app;
