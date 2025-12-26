@@ -14,6 +14,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf8"
 );
+
 const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
@@ -63,6 +64,8 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const applicationsCollection = db.collection("applications");
     const reviewsCollection = db.collection("reviews");
+    const conversationCollection = db.collection("conversations");
+    const messagesCollection = db.collection("messages");
 
     // middlewares
     const verifyAdmin = async (req, res, next) => {
@@ -102,8 +105,6 @@ async function run() {
         res.status(500).send({ message: "Tutor verification failed" });
       }
     };
-
-
 
     // auth related API
     // forgot pass
@@ -2111,6 +2112,292 @@ async function run() {
         res.status(500).send({ message: "Failed to submit review" });
       }
     });
+
+    // conversations related API
+    // get
+    app.get("/conversations", verifyFBToken, async (req, res) => {
+  try {
+    const email = req.decoded_email;
+
+    const user = await usersCollection.findOne(
+      { email },
+      { projection: { _id: 1, role: 1, name: 1, photoURL: 1 } }
+    );
+
+    if (!user) {
+      return res.status(401).send({ message: "Unauthorized" });
+    }
+
+    // Filter based on role
+    const filter =
+      user.role === "tutor"
+        ? { tutorId: user._id }   // don't wrap in new ObjectId()
+        : { studentId: user._id };
+
+    console.log("User role:", user.role, "User ID:", user._id);
+    console.log("Mongo filter:", filter);
+
+    const conversations = await conversationCollection
+      .find(filter)
+      .sort({ lastMessageAt: -1 })
+      .toArray();
+
+    // Map extra fields for frontend (optional)
+    const mappedConvos = conversations.map((convo) => {
+      return {
+        ...convo,
+        otherName:
+          user.role === "tutor" ? convo.studentName : convo.otherName,
+        otherPhoto:
+          user.role === "tutor" ? convo.studentPhoto : convo.otherPhoto,
+      };
+    });
+
+    console.log("Conversations found:", mappedConvos.length);
+
+    res.send(mappedConvos);
+  } catch (err) {
+    console.error("Get conversations error:", err);
+    res.status(500).send({ message: "Failed to load conversations" });
+  }
+});
+
+
+    app.get("/conversations/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid conversation ID" });
+        }
+
+        const conversation = await conversationCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!conversation) {
+          return res.status(404).send({ message: "Conversation not found" });
+        }
+
+        res.send(conversation);
+      } catch (err) {
+        console.error("Get conversation error:", err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+    // post
+    app.post("/conversations", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const { tutorId } = req.body;
+
+        if (!tutorId) {
+          return res.status(400).send({ message: "TutorId is required" });
+        }
+        const tutor = await tutorsCollection.findOne({
+          _id: new ObjectId(tutorId),
+        });
+        if (!tutor) {
+          return res.status(400).send({ message: "Tutor not found" });
+        }
+        const student = await usersCollection.findOne({ email });
+        if (!student || student.role !== "student") {
+          return res
+            .status(403)
+            .send({ message: "Only students can contact tutors" });
+        }
+        const existing = await conversationCollection.findOne({
+          tutorId: new ObjectId(tutorId),
+          studentId: student._id,
+        });
+        if (existing) {
+          return res.send(existing);
+        }
+        const conversationDoc = {
+          tutorId: new ObjectId(tutorId),
+          studentId: student._id,
+          lastMessage: "",
+          lastMessageAt: new Date(),
+          unreadForTutor: 0,
+          unreadForStudent: 0,
+          createdAt: new Date(),
+          otherName: tutor.name,
+          otherPhoto: tutor.photoURL,
+          studentPhoto: student.photoURL,
+          studentName: student.name,
+        };
+        const result = await conversationCollection.insertOne(conversationDoc);
+        res.status(201).send({
+          _id: result.insertedId,
+          ...conversationDoc,
+        });
+      } catch (err) {
+        console.error("Create conversation error:", err);
+        res.status(500).send({ message: "Failed to create conversation" });
+      }
+    });
+    // messages
+    app.get("/messages/:conversationId", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const { conversationId } = req.params;
+
+        if (!ObjectId.isValid(conversationId)) {
+          return res.status(400).send({ message: "Invalid conversation ID" });
+        }
+
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { _id: 1, role: 1 } }
+        );
+        if (!user) {
+          return res.status(401).send({ message: "Unauthorized" });
+        }
+
+        const conversation = await conversationCollection.findOne({
+          _id: new ObjectId(conversationId),
+        });
+        if (!conversation) {
+          return res.status(404).send({ message: "Conversation not found" });
+        }
+
+        const userIdStr = user._id.toString();
+        if (
+          conversation.studentId.toString() !== userIdStr &&
+          conversation.tutorId.toString() !== userIdStr
+        ) {
+          return res.status(403).send({ message: "Unauthorized access" });
+        }
+
+        const messages = await messagesCollection
+          .find({ conversationId: new ObjectId(conversationId) })
+          .sort({ createdAt: 1 })
+          .toArray();
+
+        res.send(messages);
+      } catch (err) {
+        console.error("Get messages error:", err);
+        res.status(500).send({ message: "Failed to load messages" });
+      }
+    });
+
+    // send message
+    app.post("/messages", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const { conversationId, text } = req.body;
+
+        if (!conversationId || !text?.trim()) {
+          return res.status(400).send({ message: "Message text required" });
+        }
+
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { _id: 1, role: 1 } }
+        );
+
+        const conversation = await conversationCollection.findOne({
+          _id: new ObjectId(conversationId),
+        });
+
+        if (!conversation) {
+          return res.status(404).send({ message: "Conversation not found" });
+        }
+
+        if (
+          conversation.studentId.toString() !== user._id.toString() &&
+          conversation.tutorId.toString() !== user._id.toString()
+        ) {
+          return res.status(403).send({ message: "Unauthorized access" });
+        }
+
+        const messageDoc = {
+          conversationId: conversation._id,
+          senderId: user._id,
+          senderRole: user.role,
+          text: text.trim(),
+          seen: false,
+          createdAt: new Date(),
+        };
+
+        await messagesCollection.insertOne(messageDoc);
+
+        const unreadField =
+          user.role === "student" ? "unreadForTutor" : "unreadForStudent";
+
+        await conversationCollection.updateOne(
+          { _id: conversation._id },
+          {
+            $set: {
+              lastMessage: text.trim(),
+              lastMessageAt: new Date(),
+            },
+            $inc: {
+              [unreadField]: 1,
+            },
+          }
+        );
+
+        res.status(201).send(messageDoc);
+      } catch (err) {
+        console.error("Send message error:", err);
+        res.status(500).send({ message: "Failed to send message" });
+      }
+    });
+
+    // seen messages
+    app.patch(
+      "/messages/seen/:conversationId",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const email = req.decoded_email;
+          const { conversationId } = req.params;
+
+          const user = await usersCollection.findOne(
+            { email },
+            { projection: { _id: 1, role: 1 } }
+          );
+
+          const conversation = await conversationCollection.findOne({
+            _id: new ObjectId(conversationId),
+          });
+
+          if (!conversation) {
+            return res.status(404).send({ message: "Conversation not found" });
+          }
+
+          if (
+            conversation.studentId.toString() !== user._id.toString() &&
+            conversation.tutorId.toString() !== user._id.toString()
+          ) {
+            return res.status(403).send({ message: "Unauthorized access" });
+          }
+
+          const unreadField =
+            user.role === "student" ? "unreadForStudent" : "unreadForTutor";
+
+          await conversationCollection.updateOne(
+            { _id: conversation._id },
+            { $set: { [unreadField]: 0 } }
+          );
+
+          await messagesCollection.updateMany(
+            {
+              conversationId: conversation._id,
+              senderId: { $ne: user._id },
+              seen: false,
+            },
+            { $set: { seen: true } }
+          );
+
+          res.send({ message: "Messages marked as seen" });
+        } catch (err) {
+          console.error("Seen message error:", err);
+          res.status(500).send({ message: "Failed to mark messages as seen" });
+        }
+      }
+    );
 
     await client.db("admin").command({ ping: 1 });
     console.log(
