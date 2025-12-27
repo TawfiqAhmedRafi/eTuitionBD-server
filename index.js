@@ -14,7 +14,6 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf8"
 );
-
 const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
@@ -2773,10 +2772,10 @@ async function run() {
       res.send({ success: true });
     });
 
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
   }
 }
@@ -2786,7 +2785,7 @@ app.get("/", (req, res) => {
   res.send("ETuitionBD Backend Service is running!");
 });
 
-app.listen(port, () => {
-  console.log(`meow ${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`meow ${port}`);
+// });
 module.exports = app;
