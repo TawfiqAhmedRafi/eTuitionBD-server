@@ -66,6 +66,7 @@ async function run() {
     const reviewsCollection = db.collection("reviews");
     const conversationCollection = db.collection("conversations");
     const messagesCollection = db.collection("messages");
+    const notificationsCollection = db.collection("notifications");
 
     // middlewares
     const verifyAdmin = async (req, res, next) => {
@@ -797,6 +798,23 @@ async function run() {
         if (result.matchedCount === 0) {
           return res.status(404).send({ message: "Tutor not found" });
         }
+        if (updateData.status === "approved") {
+          const tutor = await tutorsCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (tutor?.email) {
+            await notificationsCollection.insertOne({
+              userEmail: tutor.email,
+              type: "PROFILE_APPROVED",
+              title: "Profile Approved",
+              message: `Your tutor profile has been approved by admin.`,
+              link: `/dashboard`,
+              isRead: false,
+              createdAt: new Date(),
+            });
+          }
+        }
 
         res.send({
           success: true,
@@ -900,6 +918,21 @@ async function run() {
           submittedAt: new Date(),
         };
         const result = await tutorsCollection.insertOne(application);
+        // create notifications for all admins
+        const admins = await usersCollection.find({ role: "admin" }).toArray();
+        const notifications = admins.map((admin) => ({
+          userEmail: admin.email,
+          type: "TUTOR_APPLICATION",
+          title: "New Tutor Application",
+          message: `${name} has applied to become a tutor.`,
+          link: `/dashboard/tutors`,
+          isRead: false,
+          createdAt: new Date(),
+        }));
+
+        if (notifications.length) {
+          await notificationsCollection.insertMany(notifications);
+        }
         res.send({
           success: true,
           message: "Tutor application submitted successfully",
@@ -1663,7 +1696,18 @@ async function run() {
               },
             }
           );
-
+          // notification to tutor
+          if (tutor && tutor.email) {
+            await notificationsCollection.insertOne({
+              userEmail: tutor.email,
+              type: "APPLICATION_ACCEPTED",
+              title: "Application Accepted",
+              message: `Your application for ${tuition?.studentName}'s tuition has been accepted`,
+              link: `/dashboard/my-tuitions/tutor`,
+              isRead: false,
+              createdAt: new Date(),
+            });
+          }
           return res.send({
             message:
               "Application accepted, tuition assigned, other applications rejected",
@@ -1747,6 +1791,20 @@ async function run() {
           appliedAt: new Date(),
         };
         const result = await applicationsCollection.insertOne(application);
+        const student = await usersCollection.findOne({
+          _id: new ObjectId(tuition.userId),
+        });
+        if (student?.email) {
+          await notificationsCollection.insertOne({
+            userEmail: student.email,
+            type: "NEW_APPLICATION",
+            title: "New Tutor Application",
+            message: `${tutor.name} has applied for your tuition`,
+            link: `/dashboard/applications`,
+            isRead: false,
+            createdAt: new Date(),
+          });
+        }
         res.status(201).send({
           message: "Application submitted successfully",
           applicationId: result.insertedId,
@@ -1935,6 +1993,28 @@ async function run() {
           { $setOnInsert: paymentInfo },
           { upsert: true }
         );
+        if (tuition.tutorId && tuition.tutorEmail) {
+          const totalAmount = session.amount_total; 
+          const platformFee = Math.round(totalAmount * 0.6);
+          const tutorReceives = totalAmount - platformFee;
+
+          await notificationsCollection.insertOne({
+            userEmail: tuition.tutorEmail,
+            type: "TUITION_STARTED",
+            title: "Tuition Started",
+            message: `Payment ৳${(totalAmount / 100).toFixed(
+              2
+            )} received from ${session.customer_email}. Platform fee: ৳${(
+              platformFee / 100
+            ).toFixed(2)}. Your earnings: ৳${(tutorReceives / 100).toFixed(
+              2
+            )}. Tuition is now ongoing.`,
+            link: "/dashboard/my-tuitions/tutor",
+            isRead: false,
+            createdAt: new Date(),
+          });
+        }
+
         res.send({
           success: true,
           transactionId,
@@ -2104,6 +2184,19 @@ async function run() {
             },
           }
         );
+        const tutor = await tutorsCollection.findOne({ _id: tuition.tutorId });
+        if (tutor?.email) {
+          await notificationsCollection.insertOne({
+            userEmail: tutor.email,
+            type: "NEW_REVIEW",
+            title: "New Review",
+            message: `${student.name} has posted a review for your tuition`,
+            link: `/dashboard/review`,
+            isRead: false,
+            createdAt: new Date(),
+          });
+        }
+
         res.status(201).send({
           message: "Review submitted successfully",
           reviewId: result.insertedId,
@@ -2235,6 +2328,19 @@ async function run() {
           studentName: student.name,
         };
         const result = await conversationCollection.insertOne(conversationDoc);
+        if (tutor?.email) {
+          //console.log(tutor.email)
+          await notificationsCollection.insertOne({
+            userEmail: tutor.email,
+            type: "NEW_MESSAGE",
+            title: "New Conversation",
+            message: `${student.name} started a conversation with you`,
+            link: `/dashboard/messages/${result.insertedId}`,
+            isRead: false,
+            createdAt: new Date(),
+          });
+        }
+
         res.status(201).send({
           _id: result.insertedId,
           ...conversationDoc,
@@ -2292,7 +2398,17 @@ async function run() {
         };
 
         const result = await conversationCollection.insertOne(conversationDoc);
-
+        if (student?.email) {
+          await notificationsCollection.insertOne({
+            userEmail: student.email,
+            type: "NEW_MESSAGE",
+            title: "New Conversation",
+            message: `${tutor.name} started a conversation with you`,
+            link: `/dashboard/messages/${result.insertedId}`,
+            isRead: false,
+            createdAt: new Date(),
+          });
+        }
         res.status(201).send({ _id: result.insertedId, ...conversationDoc });
       } catch (err) {
         console.error("Tutor create conversation error:", err);
@@ -2435,7 +2551,31 @@ async function run() {
             },
           }
         );
-
+        let recipientEmail;
+        if (user.role === "student") {
+          const tutor = await tutorsCollection.findOne({
+            _id: conversation.tutorId,
+          });
+          recipientEmail = tutor?.email;
+        } else if (user.role === "tutor") {
+          const student = await usersCollection.findOne({
+            _id: conversation.studentId,
+          });
+          recipientEmail = student?.email;
+        }
+        if (recipientEmail) {
+          await notificationsCollection.insertOne({
+            userEmail: recipientEmail,
+            type: "NEW_MESSAGE",
+            title: "New Message",
+            message: `${
+              user.role === "student" ? student.name : tutor.name
+            } sent you a message`,
+            link: `/dashboard/messages/${conversation._id}`,
+            isRead: false,
+            createdAt: new Date(),
+          });
+        }
         res.status(201).send(messageDoc);
       } catch (err) {
         console.error("Send message error:", err);
@@ -2518,6 +2658,59 @@ async function run() {
         }
       }
     );
+    // notifications
+
+    app.get("/notifications", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const notifications = await notificationsCollection
+          .find({ userEmail: email })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(notifications);
+      } catch (err) {
+        console.error("Fetch notifications error:", err);
+        res.status(500).send({ message: "Failed to fetch notifications" });
+      }
+    });
+    // mark as read
+    app.patch("/notifications/:id/read", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const { id } = req.params;
+
+        const result = await notificationsCollection.updateOne(
+          { _id: new ObjectId(id), userEmail: email },
+          { $set: { isRead: true } }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Notification not found" });
+        }
+
+        res.send({ success: true, modifiedCount: result.modifiedCount });
+      } catch (err) {
+        console.error("Mark notification read error:", err);
+        res.status(500).send({ message: "Failed to update notification" });
+      }
+    });
+    // mark all read
+    app.patch("/notifications/read-all", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const result = await notificationsCollection.updateMany(
+          { userEmail: email, isRead: false },
+          { $set: { isRead: true } }
+        );
+
+        res.send({ success: true, modifiedCount: result.modifiedCount });
+      } catch (err) {
+        console.error("Mark all notifications read error:", err);
+        res.status(500).send({ message: "Failed to update notifications" });
+      }
+    });
 
     await client.db("admin").command({ ping: 1 });
     console.log(
