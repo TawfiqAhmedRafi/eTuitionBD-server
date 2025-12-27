@@ -1702,7 +1702,7 @@ async function run() {
               userEmail: tutor.email,
               type: "APPLICATION_ACCEPTED",
               title: "Application Accepted",
-              message: `Your application for ${tuition?.studentName}'s tuition has been accepted`,
+              message: `Your application for ${tuition?.name}'s tuition has been accepted`,
               link: `/dashboard/my-tuitions/tutor`,
               isRead: false,
               createdAt: new Date(),
@@ -1993,26 +1993,40 @@ async function run() {
           { $setOnInsert: paymentInfo },
           { upsert: true }
         );
+        // Insert notification only if it doesn't already exist for this transaction
         if (tuition.tutorId && tuition.tutorEmail) {
-          const totalAmount = session.amount_total; 
-          const platformFee = Math.round(totalAmount * 0.6);
-          const tutorReceives = totalAmount - platformFee;
-
-          await notificationsCollection.insertOne({
-            userEmail: tuition.tutorEmail,
+          const existingNotification = await notificationsCollection.findOne({
+            transactionId,
             type: "TUITION_STARTED",
-            title: "Tuition Started",
-            message: `Payment ৳${(totalAmount / 100).toFixed(
-              2
-            )} received from ${session.customer_email}. Platform fee: ৳${(
-              platformFee / 100
-            ).toFixed(2)}. Your earnings: ৳${(tutorReceives / 100).toFixed(
-              2
-            )}. Tuition is now ongoing.`,
-            link: "/dashboard/my-tuitions/tutor",
-            isRead: false,
-            createdAt: new Date(),
           });
+
+          if (!existingNotification) {
+            const totalAmount = session.amount_total;
+            const platformFee = Math.round(totalAmount * 0.6);
+            const tutorReceives = totalAmount - platformFee;
+            const student = await usersCollection.findOne({
+              email: session.customer_email,
+            });
+
+            await notificationsCollection.insertOne({
+              userEmail: tuition.tutorEmail,
+              type: "TUITION_STARTED",
+              transactionId, // dedupe by transaction
+              title: "Tuition Started",
+              message: `Payment ৳${(totalAmount / 100).toFixed(
+                2
+              )} received from ${student.name} (${
+                session.customer_email
+              }). Platform fee: ৳${(platformFee / 100).toFixed(
+                2
+              )}. Your earnings: ৳${(tutorReceives / 100).toFixed(
+                2
+              )}. Tuition is now ongoing.`,
+              link: "/dashboard/my-tuitions/tutor",
+              isRead: false,
+              createdAt: new Date(),
+            });
+          }
         }
 
         res.send({
@@ -2552,30 +2566,46 @@ async function run() {
           }
         );
         let recipientEmail;
+        let senderName;
+
         if (user.role === "student") {
           const tutor = await tutorsCollection.findOne({
             _id: conversation.tutorId,
           });
           recipientEmail = tutor?.email;
-        } else if (user.role === "tutor") {
+
+          const student = await usersCollection.findOne(
+            { _id: conversation.studentId },
+            { projection: { name: 1 } }
+          );
+          senderName = student?.name;
+        }
+
+        if (user.role === "tutor") {
           const student = await usersCollection.findOne({
             _id: conversation.studentId,
           });
           recipientEmail = student?.email;
+
+          const tutor = await tutorsCollection.findOne(
+            { email },
+            { projection: { name: 1 } }
+          );
+          senderName = tutor?.name;
         }
-        if (recipientEmail) {
+
+        if (recipientEmail && senderName) {
           await notificationsCollection.insertOne({
             userEmail: recipientEmail,
             type: "NEW_MESSAGE",
             title: "New Message",
-            message: `${
-              user.role === "student" ? student.name : tutor.name
-            } sent you a message`,
+            message: `${senderName} sent you a message`,
             link: `/dashboard/messages/${conversation._id}`,
             isRead: false,
             createdAt: new Date(),
           });
         }
+
         res.status(201).send(messageDoc);
       } catch (err) {
         console.error("Send message error:", err);
@@ -2710,6 +2740,37 @@ async function run() {
         console.error("Mark all notifications read error:", err);
         res.status(500).send({ message: "Failed to update notifications" });
       }
+    });
+    //deleting all notifications of a user
+    app.delete("/notifications", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const result = await notificationsCollection.deleteMany({
+          userEmail: email,
+        });
+
+        res.send({
+          success: true,
+          deletedCount: result.deletedCount,
+        });
+      } catch (err) {
+        console.error("Delete all notifications error:", err);
+        res.status(500).send({ message: "Failed to delete notifications" });
+      }
+    });
+
+    // deleting particular notification
+    app.delete("/notifications/:id", verifyFBToken, async (req, res) => {
+      const email = req.decoded_email;
+      const { id } = req.params;
+
+      await notificationsCollection.deleteOne({
+        _id: new ObjectId(id),
+        userEmail: email,
+      });
+
+      res.send({ success: true });
     });
 
     await client.db("admin").command({ ping: 1 });
