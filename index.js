@@ -724,49 +724,59 @@ async function run() {
     });
     // get all tutors
     app.get("/tutors", verifyFBToken, async (req, res) => {
-      try {
-        const {
-          email,
-          status,
-          page = 1,
-          limit = 10,
-          sortBy = "submittedAt",
-          order = "desc",
-        } = req.query;
+  try {
+    const {
+      email,
+      status,
+      subject,
+      district,
+      page = 1,
+      limit = 10,
+    } = req.query;
 
-        const pageNumber = Number(page);
-        const limitNumber = Number(limit);
-        const skip = (pageNumber - 1) * limitNumber;
+    const pageNumber = parseInt(page);
+    const limitNumber = Math.min(parseInt(limit), 20);
+    const skip = (pageNumber - 1) * limitNumber;
 
-        const query = {};
-        if (email) query.email = email;
-        if (status) query.status = status;
+    const query = {};
 
-        const sortQuery = {
-          [sortBy]: order === "asc" ? 1 : -1,
-        };
+   
+    if (email) query.email = email;
+    if (status) query.status = status;
 
-        const totalTutors = await tutorsCollection.countDocuments(query);
+    // subject search
+    if (subject) {
+      query.subjects = { $regex: subject, $options: "i" };
+      
+    }
 
-        const tutors = await tutorsCollection
-          .find(query)
-          .sort(sortQuery)
-          .skip(skip)
-          .limit(limitNumber)
-          .toArray();
+    // location search
+    if (district) {
+      query.district = { $regex: district, $options: "i" };
+    }
 
-        res.send({
-          tutors,
-          page: pageNumber,
-          limit: limitNumber,
-          totalPages: Math.ceil(totalTutors / limitNumber),
-          totalTutors,
-        });
-      } catch (error) {
-        console.error("Get tutors error:", error);
-        res.status(500).send({ message: "Failed to fetch tutors" });
-      }
+    const totalTutors = await tutorsCollection.countDocuments(query);
+
+    const tutors = await tutorsCollection
+      .find(query)
+      .skip(skip)
+      .sort({submittedAt:-1})
+      .limit(limitNumber)
+      .toArray();
+
+    res.send({
+      tutors,
+      page: pageNumber,
+      limit: limitNumber,
+      totalTutors,
+      totalPages: Math.ceil(totalTutors / limitNumber),
     });
+  } catch (error) {
+    console.error("Get tutors error:", error);
+    res.status(500).send({ message: "Failed to fetch tutors" });
+  }
+});
+
     // getting tutors by id
     app.get("/tutors/:id", verifyFBToken, async (req, res) => {
       try {
