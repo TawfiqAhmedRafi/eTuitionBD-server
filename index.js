@@ -724,58 +724,56 @@ async function run() {
     });
     // get all tutors
     app.get("/tutors", verifyFBToken, async (req, res) => {
-  try {
-    const {
-      email,
-      status,
-      subject,
-      district,
-      page = 1,
-      limit = 10,
-    } = req.query;
+      try {
+        const {
+          email,
+          status,
+          subject,
+          district,
+          page = 1,
+          limit = 10,
+        } = req.query;
 
-    const pageNumber = parseInt(page);
-    const limitNumber = Math.min(parseInt(limit), 20);
-    const skip = (pageNumber - 1) * limitNumber;
+        const pageNumber = parseInt(page);
+        const limitNumber = Math.min(parseInt(limit), 20);
+        const skip = (pageNumber - 1) * limitNumber;
 
-    const query = {};
+        const query = {};
 
-   
-    if (email) query.email = email;
-    if (status) query.status = status;
+        if (email) query.email = email;
+        if (status) query.status = status;
 
-    // subject search
-    if (subject) {
-      query.subjects = { $regex: subject, $options: "i" };
-      
-    }
+        // subject search
+        if (subject) {
+          query.subjects = { $regex: subject, $options: "i" };
+        }
 
-    // location search
-    if (district) {
-      query.district = { $regex: district, $options: "i" };
-    }
+        // location search
+        if (district) {
+          query.district = { $regex: district, $options: "i" };
+        }
 
-    const totalTutors = await tutorsCollection.countDocuments(query);
+        const totalTutors = await tutorsCollection.countDocuments(query);
 
-    const tutors = await tutorsCollection
-      .find(query)
-      .skip(skip)
-      .sort({submittedAt:-1})
-      .limit(limitNumber)
-      .toArray();
+        const tutors = await tutorsCollection
+          .find(query)
+          .skip(skip)
+          .sort({ submittedAt: -1 })
+          .limit(limitNumber)
+          .toArray();
 
-    res.send({
-      tutors,
-      page: pageNumber,
-      limit: limitNumber,
-      totalTutors,
-      totalPages: Math.ceil(totalTutors / limitNumber),
+        res.send({
+          tutors,
+          page: pageNumber,
+          limit: limitNumber,
+          totalTutors,
+          totalPages: Math.ceil(totalTutors / limitNumber),
+        });
+      } catch (error) {
+        console.error("Get tutors error:", error);
+        res.status(500).send({ message: "Failed to fetch tutors" });
+      }
     });
-  } catch (error) {
-    console.error("Get tutors error:", error);
-    res.status(500).send({ message: "Failed to fetch tutors" });
-  }
-});
 
     // getting tutors by id
     app.get("/tutors/:id", verifyFBToken, async (req, res) => {
@@ -1945,14 +1943,19 @@ async function run() {
         if (!sessionId) {
           return res.status(400).send({ message: "Session id missing" });
         }
+
         const session = await stripe.checkout.sessions.retrieve(sessionId);
+
         if (session.customer_email !== req.decoded_email) {
           return res.status(403).send({ message: "Forbidden access" });
         }
+
         if (session.payment_status !== "paid") {
           return res.status(400).send({ message: "Payment not completed" });
         }
+
         const transactionId = session.payment_intent;
+
         const paymentExist = await paymentsCollection.findOne({
           transactionId,
         });
@@ -1972,17 +1975,13 @@ async function run() {
         if (!tuition) {
           return res.status(404).send({ message: "Tuition not found" });
         }
+
+        // Update tuition status
         await tuitionsCollection.updateOne(
-          {
-            _id: tuition._id,
-          },
-          {
-            $set: {
-              status: "ongoing",
-              startedAt: new Date(),
-            },
-          }
+          { _id: tuition._id },
+          { $set: { status: "ongoing", startedAt: new Date() } }
         );
+
         const paymentInfo = {
           tuitionId: tuition._id,
           studentId: tuition.userId,
@@ -2002,36 +2001,71 @@ async function run() {
           { $setOnInsert: paymentInfo },
           { upsert: true }
         );
-        // Insert notification only if it doesn't already exist for this transaction
+
         if (tuition.tutorId && tuition.tutorEmail) {
-          const existingNotification = await notificationsCollection.findOne({
-            transactionId,
-            type: "TUITION_STARTED",
+          const totalAmount = session.amount_total;
+          const platformFee = Math.round(totalAmount * 0.6);
+          const tutorReceives = totalAmount - platformFee;
+          const student = await usersCollection.findOne({
+            email: session.customer_email,
           });
 
-          if (!existingNotification) {
-            const totalAmount = session.amount_total;
-            const platformFee = Math.round(totalAmount * 0.6);
-            const tutorReceives = totalAmount - platformFee;
-            const student = await usersCollection.findOne({
-              email: session.customer_email,
+          // Upsert: create only if it doesn't exist
+          await notificationsCollection.updateOne(
+            {
+              transactionId, // existing field
+              type: "TUITION_STARTED",
+              userEmail: tuition.tutorEmail, // dedupe per tutor + transaction
+            },
+            {
+              $setOnInsert: {
+                userEmail: tuition.tutorEmail,
+                type: "TUITION_STARTED",
+                transactionId,
+                title: "Tuition Started",
+                message: `Payment ৳${(totalAmount / 100).toFixed(
+                  2
+                )} received from ${student.name} (${
+                  session.customer_email
+                }). Platform fee: ৳${(platformFee / 100).toFixed(
+                  2
+                )}. Your earnings: ৳${(tutorReceives / 100).toFixed(
+                  2
+                )}. Tuition is now ongoing.`,
+                link: "/dashboard/my-tuitions/tutor",
+                isRead: false,
+                createdAt: new Date(),
+              },
+            },
+            { upsert: true }
+          );
+        }
+
+        // ----- Admin Notifications -----
+
+        const admins = await usersCollection.find({ role: "admin" }).toArray();
+
+        for (const admin of admins) {
+          // Check if this admin already has a notification for this transaction
+          const existingAdminNotification =
+            await notificationsCollection.findOne({
+              transactionId,
+              type: "TUITION_PAYMENT",
+              userEmail: admin.email,
             });
 
+          if (!existingAdminNotification) {
             await notificationsCollection.insertOne({
-              userEmail: tuition.tutorEmail,
-              type: "TUITION_STARTED",
-              transactionId, // dedupe by transaction
-              title: "Tuition Started",
-              message: `Payment ৳${(totalAmount / 100).toFixed(
+              userEmail: admin.email,
+              type: "TUITION_PAYMENT",
+              transactionId,
+              title: "Tuition Payment Received",
+              message: `Payment of ৳${(session.amount_total / 100).toFixed(
                 2
-              )} received from ${student.name} (${
+              )} received for tuition ID ${tuitionId} from ${
                 session.customer_email
-              }). Platform fee: ৳${(platformFee / 100).toFixed(
-                2
-              )}. Your earnings: ৳${(tutorReceives / 100).toFixed(
-                2
-              )}. Tuition is now ongoing.`,
-              link: "/dashboard/my-tuitions/tutor",
+              }.`,
+              link: "/dashboard/payments",
               isRead: false,
               createdAt: new Date(),
             });
@@ -2782,10 +2816,10 @@ async function run() {
       res.send({ success: true });
     });
 
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!"
-    // );
+    await client.db("admin").command({ ping: 1 });
+    console.log(
+      "Pinged your deployment. You successfully connected to MongoDB!"
+    );
   } finally {
   }
 }
@@ -2795,7 +2829,7 @@ app.get("/", (req, res) => {
   res.send("ETuitionBD Backend Service is running!");
 });
 
-// app.listen(port, () => {
-//   console.log(`meow ${port}`);
-// });
+app.listen(port, () => {
+  console.log(`meow ${port}`);
+});
 module.exports = app;
