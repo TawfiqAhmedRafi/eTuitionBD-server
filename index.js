@@ -723,7 +723,7 @@ async function run() {
       }
     });
     // get all tutors
-    app.get("/tutors", verifyFBToken, async (req, res) => {
+    app.get("/tutors", async (req, res) => {
       try {
         const {
           email,
@@ -776,7 +776,7 @@ async function run() {
     });
 
     // getting tutors by id
-    app.get("/tutors/:id", verifyFBToken, async (req, res) => {
+    app.get("/tutors/:id", async (req, res) => {
       try {
         const { id } = req.params;
         const tutor = await tutorsCollection.findOne({ _id: new ObjectId(id) });
@@ -972,7 +972,7 @@ async function run() {
     });
 
     // get all tuitions
-    app.get("/tuitions", verifyFBToken, async (req, res) => {
+    app.get("/tuitions", async (req, res) => {
       try {
         let {
           page = 1,
@@ -1164,7 +1164,7 @@ async function run() {
       }
     });
     // individual tuitions
-    app.get("/tuitions/:id", verifyFBToken, async (req, res) => {
+    app.get("/tuitions/:id",  async (req, res) => {
       const { id } = req.params;
 
       try {
