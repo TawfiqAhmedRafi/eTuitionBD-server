@@ -69,6 +69,7 @@ async function run() {
     const conversationCollection = db.collection("conversations");
     const messagesCollection = db.collection("messages");
     const notificationsCollection = db.collection("notifications");
+    const complaintsCollection = db.collection("complaints");
 
     // middlewares
     const verifyAdmin = async (req, res, next) => {
@@ -108,6 +109,121 @@ async function run() {
         res.status(500).send({ message: "Tutor verification failed" });
       }
     };
+    // complaint API
+    // get complaints as admin
+    app.get("/complaints", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+        const totalComplaints = await complaintsCollection.countDocuments();
+        const complaints = await complaintsCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+        const totalPages = Math.ceil(totalComplaints / limit);
+
+        res.status(200).send({
+          success: true,
+          complaints,
+          totalPages,
+          currentPage: page,
+        });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch complaints" });
+      }
+    });
+    // resolve complaint
+    app.patch(
+      "/complaints/:id/resolve",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid complaint ID" });
+          }
+
+          const result = await complaintsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: "resolved", updatedAt: new Date() } }
+          );
+
+          if (result.matchedCount === 0) {
+            return res.status(404).send({ message: "Complaint not found" });
+          }
+
+          res.status(200).send({
+            success: true,
+            message: "Complaint marked as resolved",
+          });
+        } catch (err) {
+          console.error(err);
+          res
+            .status(500)
+            .send({ message: "Failed to update complaint status" });
+        }
+      }
+    );
+    // posting complaint
+    app.post("/complaints", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const user = await usersCollection.findOne({ email });
+        if (!user) {
+          return res.status(404).send("No user Found");
+        }
+        const { message } = req.body;
+        if (!message) {
+          return res.status(400).send("Complaint message is required");
+        }
+        const complaintDoc = {
+          userId: user._id,
+          name: user.name,
+          email: user.email,
+          message,
+          photo: user.photoURL,
+          createdAt: new Date(),
+          status: "pending",
+        };
+        const result = await complaintsCollection.insertOne(complaintDoc);
+        const admins = await usersCollection.find({ role: "admin" }).toArray();
+
+        for (const admin of admins) {
+          const existingAdminNotification =
+            await notificationsCollection.findOne({
+              complaintId: result.insertedId,
+              type: "Complaint_Received",
+              userEmail: admin.email,
+            });
+
+          if (!existingAdminNotification) {
+            await notificationsCollection.insertOne({
+              userEmail: admin.email,
+              type: "Complaint_Received",
+              complaintId: result.insertedId,
+              title: "A new complaint has been submitted",
+              message: `A complaint has been submitted by ${user.name} (${user.email}).`,
+              link: "/dashboard/complaints/all",
+              isRead: false,
+              createdAt: new Date(),
+            });
+          }
+        }
+        res.status(201).send({
+          success: true,
+          complaintId: result.insertedId,
+          message: "Complaint submitted successfully",
+        });
+      } catch (err) {
+        res.status(500).send({ message: "Failed to submit complaint" });
+      }
+    });
     // stats
     app.get("/stats", async (req, res) => {
       try {
