@@ -51,10 +51,13 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
+app.get("/ping", (req, res) => {
+  res.status(200).send("Server is alive");
+});
 
 async function run() {
   try {
-    await client.connect();
+    //await client.connect();
 
     const db = client.db("e_tuitionBD_db");
     const usersCollection = db.collection("users");
