@@ -57,7 +57,7 @@ app.get("/ping", (req, res) => {
 
 async function run() {
   try {
-    await client.connect();
+   // await client.connect();
 
     const db = client.db("e_tuitionBD_db");
     const usersCollection = db.collection("users");
@@ -110,30 +110,73 @@ async function run() {
       }
     };
     // complaint API
+    // getting own complaints
+    app.get("/my-complaints", verifyFBToken, async (req, res) => {
+  try {
+    const email = req.decoded_email;
+
+    
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+
+    
+    const totalCount = await complaintsCollection.countDocuments({ email });
+
+    
+    const totalPages = Math.ceil(totalCount / limit);
+
+   
+    const complaints = await complaintsCollection
+      .find({ email })
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .toArray();
+
+    res.send({ complaints, totalPages });
+  } catch (err) {
+    console.error("Fetch complaints error:", err);
+    res.status(500).send({ message: "Failed to fetch complaints" });
+  }
+});
+
     // get complaints as admin
-    app.get("/complaints", verifyFBToken, verifyAdmin, async (req, res) => {
+    app.get("/complaints", async (req, res) => {
       try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const skip = (page - 1) * limit;
-        const totalComplaints = await complaintsCollection.countDocuments();
+        const { page = 1, limit = 10, status } = req.query;
+
+        // 1. Build a dynamic query object
+        let query = {};
+
+        // If status exists and is not an empty string, add it to the filter
+        if (status && status !== "") {
+          query.status = status;
+        }
+
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+
+        // 2. Apply the query to both the find() and countDocuments()
         const complaints = await complaintsCollection
-          .find({})
+          .find(query) // This will be {} if no status is selected
           .sort({ createdAt: -1 })
           .skip(skip)
-          .limit(limit)
+          .limit(parseInt(limit))
           .toArray();
-        const totalPages = Math.ceil(totalComplaints / limit);
 
-        res.status(200).send({
-          success: true,
+        const totalCount = await complaintsCollection.countDocuments(query);
+
+        const totalPages = Math.ceil(totalCount / parseInt(limit));
+
+        res.send({
           complaints,
           totalPages,
-          currentPage: page,
+          currentPage: parseInt(page),
         });
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ message: "Failed to fetch complaints" });
+      } catch (error) {
+        console.error("Backend Error:", error);
+        res
+          .status(500)
+          .send({ message: "Internal Server Error", error: error.message });
       }
     });
     // resolve complaint
@@ -149,24 +192,71 @@ async function run() {
             return res.status(400).send({ message: "Invalid complaint ID" });
           }
 
-          const result = await complaintsCollection.updateOne(
+          const complaint = await complaintsCollection.findOneAndUpdate(
             { _id: new ObjectId(id) },
-            { $set: { status: "resolved", updatedAt: new Date() } }
+            { $set: { status: "resolved", resolvedAt: new Date() } },
+            { returnDocument: "after" } // This makes 'complaint' the updated doc
           );
 
-          if (result.matchedCount === 0) {
+          // CHANGE THIS: Check 'complaint' directly, not 'result.value'
+          if (!complaint) {
+            return res.status(404).send({ message: "Complaint not found" });
+          }
+
+          // Push notification to user
+          await notificationsCollection.insertOne({
+            userEmail: complaint.email,
+            type: "Complaint_Resolved",
+            complaintId: complaint._id,
+            title: "Complaint has been resolved",
+            // Note: Ensure createdAt exists and is a Date object to use toISOString()
+            message: `Your complaint submitted on ${new Date(
+              complaint.createdAt
+            ).toISOString()} has been resolved by the admin.`,
+            link: "/dashboard/my-complaints",
+            isRead: false,
+            createdAt: new Date(),
+          });
+
+          res.status(200).send({
+            success: true,
+            message: "Complaint marked as resolved",
+            complaint,
+          });
+        } catch (err) {
+          console.error(err);
+          res.status(500).send({ message: "Internal Server Error" });
+        }
+      }
+    );
+    // delete complaint
+    app.delete(
+      "/complaints/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid complaint ID" });
+          }
+
+          const result = await complaintsCollection.deleteOne({
+            _id: new ObjectId(id),
+          });
+
+          if (result.deletedCount === 0) {
             return res.status(404).send({ message: "Complaint not found" });
           }
 
           res.status(200).send({
             success: true,
-            message: "Complaint marked as resolved",
+            message: "Complaint deleted successfully",
           });
         } catch (err) {
           console.error(err);
-          res
-            .status(500)
-            .send({ message: "Failed to update complaint status" });
+          res.status(500).send({ message: "Failed to delete complaint" });
         }
       }
     );
@@ -2966,10 +3056,10 @@ async function run() {
       res.send({ success: true });
     });
 
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
   }
 }
@@ -2979,7 +3069,7 @@ app.get("/", (req, res) => {
   res.send("ETuitionBD Backend Service is running!");
 });
 
-app.listen(port, () => {
-  console.log(`meow ${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`meow ${port}`);
+// });
 module.exports = app;
