@@ -57,7 +57,7 @@ app.get("/ping", (req, res) => {
 
 async function run() {
   try {
-    //await client.connect();
+    await client.connect();
 
     const db = client.db("e_tuitionBD_db");
     const usersCollection = db.collection("users");
@@ -108,6 +108,37 @@ async function run() {
         res.status(500).send({ message: "Tutor verification failed" });
       }
     };
+    // stats
+    app.get("/stats", async (req, res) => {
+      try {
+        const totalTuitions = await tuitionsCollection.countDocuments();
+
+        const successfulTuitions = await tuitionsCollection.countDocuments({
+          status: { $in: ["assigned", "ongoing", "completed"] },
+        });
+
+        const successRate =
+          totalTuitions === 0
+            ? 0
+            : Math.round((successfulTuitions / totalTuitions) * 100);
+
+        const verifiedTutors = await tutorsCollection.countDocuments({
+          status: "approved",
+        });
+
+        const activeTuitions = await tuitionsCollection.countDocuments({
+          status: { $nin: ["closed"] },
+        });
+
+        res.send({
+          verifiedTutors,
+          activeTuitions,
+          successRate,
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to calculate stats" });
+      }
+    });
 
     // auth related API
     // forgot pass
@@ -1167,7 +1198,7 @@ async function run() {
       }
     });
     // individual tuitions
-    app.get("/tuitions/:id",  async (req, res) => {
+    app.get("/tuitions/:id", async (req, res) => {
       const { id } = req.params;
 
       try {
@@ -2819,10 +2850,10 @@ async function run() {
       res.send({ success: true });
     });
 
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!"
-    // );
+    await client.db("admin").command({ ping: 1 });
+    console.log(
+      "Pinged your deployment. You successfully connected to MongoDB!"
+    );
   } finally {
   }
 }
@@ -2832,7 +2863,7 @@ app.get("/", (req, res) => {
   res.send("ETuitionBD Backend Service is running!");
 });
 
-// app.listen(port, () => {
-//   console.log(`meow ${port}`);
-// });
+app.listen(port, () => {
+  console.log(`meow ${port}`);
+});
 module.exports = app;
